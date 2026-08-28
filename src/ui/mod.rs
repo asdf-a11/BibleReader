@@ -14,8 +14,8 @@ use crate::domain::{
     WordStateStore,
 };
 use crate::ui::layout::{
-    ReaderLayout, Theme, BIBLE_PATH, FONT_PATH, READER_FONT_SIZE, READER_LEFT, READER_TOP,
-    TRANSLATIONS_PATH,
+    ui_scale, ReaderLayout, Theme, BIBLE_PATH, FONT_PATH, READER_FONT_SIZE, READER_LEFT,
+    READER_TOP, TRANSLATIONS_PATH,
 };
 use crate::ui::mouse::{Input, MouseState};
 use crate::ui::state::AppState;
@@ -63,10 +63,11 @@ pub async fn run() {
 
     loop {
         let screen = vec2(screen_width(), screen_height());
+        let scale = ui_scale(screen, game.zoom);
         mouse.update(is_mouse_button_down(MouseButton::Left), mouse_wheel());
 
         let input = Input::from_mouse(&mouse, vec2(mouse_position().0, mouse_position().1));
-        let reader_layout = build_reader_layout(&game.state, &bible, screen, &measure);
+        let reader_layout = build_reader_layout(&game.state, &bible, screen, scale, &measure);
 
         update(&mut game, &bible, &input, screen, reader_layout.as_ref());
 
@@ -77,7 +78,16 @@ pub async fn run() {
             }
         }
 
-        render(&game, &bible, &font, &translations, &theme, screen, reader_layout.as_ref());
+        render(
+            &game,
+            &bible,
+            &font,
+            &translations,
+            &theme,
+            screen,
+            scale,
+            reader_layout.as_ref(),
+        );
 
         next_frame().await;
     }
@@ -90,6 +100,7 @@ fn build_reader_layout(
     state: &AppState,
     bible: &Bible,
     screen: Vec2,
+    scale: f32,
     measure: &dyn Fn(&str, f32) -> f32,
 ) -> Option<ReaderLayout> {
     let (book_id, chapter) = match state {
@@ -97,12 +108,12 @@ fn build_reader_layout(
         _ => return None,
     };
     let tokens = bible.get_chapter_tokens(&book_id, chapter)?;
-    let max_width = (screen.x - READER_LEFT * 2.0).max(100.0);
+    let max_width = (screen.x - READER_LEFT * scale * 2.0).max(100.0 * scale);
     Some(ReaderLayout::new(
         &tokens,
-        READER_FONT_SIZE,
-        READER_LEFT,
-        READER_TOP,
+        READER_FONT_SIZE * scale,
+        READER_LEFT * scale,
+        READER_TOP * scale,
         max_width,
         measure,
     ))
@@ -112,6 +123,7 @@ fn make_measure(font: &Font) -> impl Fn(&str, f32) -> f32 + '_ {
     move |text, size| measure_text(text, Some(font), size as u16, 1.0).width
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render(
     game: &Game,
     bible: &Bible,
@@ -119,20 +131,25 @@ fn render(
     translations: &Translations,
     theme: &Theme,
     screen: Vec2,
+    scale: f32,
     reader_layout: Option<&ReaderLayout>,
 ) {
-    let font_size = READER_FONT_SIZE;
-    let ctx = views::DrawContext { theme, font, screen };
+    let ctx = views::DrawContext {
+        theme,
+        font,
+        screen,
+        scale,
+    };
     match &game.state {
         AppState::BookSelection => {
-            views::render_book_selection(&ctx, font_size, &bible.get_books_in_order(), &game.book_scroll);
+            views::render_book_selection(&ctx, &bible.get_books_in_order(), &game.book_scroll);
         }
         AppState::ChapterSelection { book_id } => {
             let chapters = bible
                 .get_book(book_id)
                 .map(|b| b.chapter_numbers())
                 .unwrap_or_default();
-            views::render_chapter_selection(&ctx, font_size, &chapters, &game.chapter_scroll);
+            views::render_chapter_selection(&ctx, &chapters, &game.chapter_scroll);
         }
         AppState::Reader { .. } => {
             if let Some(layout) = reader_layout {
@@ -146,5 +163,6 @@ fn render(
                 );
             }
         }
+        AppState::Settings { .. } => views::render_settings(&ctx, game.zoom),
     }
 }

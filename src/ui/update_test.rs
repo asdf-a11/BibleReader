@@ -1,7 +1,10 @@
 use macroquad::math::{vec2, Vec2};
 
 use crate::domain::{Bible, WordStateStore, WordStatus};
-use crate::ui::layout::{ReaderLayout, READER_FONT_SIZE, READER_LEFT, READER_TOP, BOOKS_TOP};
+use crate::ui::layout::{
+    settings_button_rect, ui_scale, DrawerLayout, ReaderLayout, SettingsLayout, BOOKS_TOP,
+    MAX_ZOOM, MIN_ZOOM, READER_FONT_SIZE, READER_LEFT, READER_TOP, ZOOM_STEP,
+};
 use crate::ui::mouse::Input;
 use crate::ui::state::AppState;
 use crate::ui::update::{Game, update};
@@ -341,4 +344,110 @@ fn test_update_reports_dirty_when_word_state_changes() {
 
     let dirty = update(&mut game, &bible, &press(vec2(55.0, 105.0)), SCREEN, Some(&layout));
     assert!(dirty, "opening a word must mark the store dirty for saving");
+}
+
+// Close button in the translation window hides it without touching word state.
+#[test]
+fn test_close_button_hides_translation_window() {
+    let bible = test_bible();
+    let mut game = game();
+    game.state = AppState::Reader { book_id: "Gen".to_string(), chapter: 1 };
+    let layout = chapter_layout(&bible, "Gen", 1);
+
+    // Open the drawer on "В".
+    update(&mut game, &bible, &press(vec2(55.0, 105.0)), SCREEN, Some(&layout));
+    assert_eq!(game.selected_word.as_deref(), Some("В"));
+
+    let drawer = DrawerLayout::new(SCREEN.x, SCREEN.y, 1.0);
+    update(&mut game, &bible, &press(drawer.close_button.center()), SCREEN, Some(&layout));
+
+    assert_eq!(game.selected_word, None, "close button must hide the translation window");
+    assert_eq!(game.word_store.get_status("В"), WordStatus::Seen, "word stays Seen, not lost");
+    assert_eq!(game.state, AppState::Reader { book_id: "Gen".to_string(), chapter: 1 });
+}
+
+// The settings button on any normal screen opens the settings menu.
+#[test]
+fn test_settings_button_opens_settings_menu() {
+    let bible = test_bible();
+    let mut game = game();
+
+    let button = settings_button_rect(SCREEN.x, 1.0);
+    update(&mut game, &bible, &press(button.center()), SCREEN, None);
+
+    match &game.state {
+        AppState::Settings { return_to } => {
+            assert_eq!(**return_to, AppState::BookSelection, "must remember the previous screen");
+        }
+        other => panic!("expected Settings, got {:?}", other),
+    }
+}
+
+// Settings works from the reader too and returns to it afterwards.
+#[test]
+fn test_settings_back_button_returns_to_previous_screen() {
+    let bible = test_bible();
+    let mut game = game();
+    game.state = AppState::ChapterSelection { book_id: "Gen".to_string() };
+
+    let button = settings_button_rect(SCREEN.x, 1.0);
+    update(&mut game, &bible, &press(button.center()), SCREEN, None);
+    assert!(matches!(game.state, AppState::Settings { .. }));
+
+    update(&mut game, &bible, &press(vec2(30.0, 30.0)), SCREEN, None);
+    assert_eq!(game.state, AppState::ChapterSelection { book_id: "Gen".to_string() });
+}
+
+// Zoom in/out buttons change the zoom, clamped to the allowed range.
+#[test]
+fn test_zoom_in_out_buttons_change_zoom_within_bounds() {
+    let bible = test_bible();
+    let mut game = game();
+
+    let button = settings_button_rect(SCREEN.x, 1.0);
+    update(&mut game, &bible, &press(button.center()), SCREEN, None);
+    assert_eq!(game.zoom, 1.0);
+
+    for expected in [1.25f32, 1.5, 1.75, 2.0] {
+        let layout = SettingsLayout::new(SCREEN, ui_scale(SCREEN, game.zoom));
+        update(&mut game, &bible, &press(layout.zoom_in.center()), SCREEN, None);
+        assert_eq!(game.zoom, expected, "zoom in must step by {} and hit {}", ZOOM_STEP, expected);
+        assert!(matches!(game.state, AppState::Settings { .. }), "still in settings");
+    }
+
+    // Clamped at the maximum.
+    let layout = SettingsLayout::new(SCREEN, ui_scale(SCREEN, game.zoom));
+    update(&mut game, &bible, &press(layout.zoom_in.center()), SCREEN, None);
+    assert_eq!(game.zoom, MAX_ZOOM);
+
+    // Zoom back down, clamped at the minimum.
+    for _ in 0..100 {
+        let layout = SettingsLayout::new(SCREEN, ui_scale(SCREEN, game.zoom));
+        update(&mut game, &bible, &press(layout.zoom_out.center()), SCREEN, None);
+    }
+    assert_eq!(game.zoom, MIN_ZOOM);
+}
+
+// Every screen handler keeps working when zoomed: geometry is hit-tested in
+// scaled coordinates.
+#[test]
+fn test_zoom_scales_hit_test_coordinates() {
+    let bible = test_bible();
+    let mut game2 = game();
+    game2.zoom = 2.0;
+    // At zoom 2 the y that selects a book at zoom 1 is above the list.
+    update(&mut game2, &bible, &press(vec2(100.0, BOOKS_TOP + 10.0)), SCREEN, None);
+    assert_eq!(game2.state, AppState::BookSelection, "click above the list start must no-op");
+
+    let mut game = game();
+    game.zoom = 2.0;
+    // First book row starts at BOOKS_TOP * 2 = 300, rows are 60px tall.
+    update(
+        &mut game,
+        &bible,
+        &press(vec2(100.0, BOOKS_TOP * 2.0 + 10.0)),
+        SCREEN,
+        None,
+    );
+    assert_eq!(game.state, AppState::ChapterSelection { book_id: "Gen".to_string() });
 }

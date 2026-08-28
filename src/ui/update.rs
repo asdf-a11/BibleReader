@@ -2,8 +2,9 @@ use macroquad::math::{vec2, Vec2};
 
 use crate::domain::{Bible, WordStateStore};
 use crate::ui::layout::{
-    back_button_rect, chapter_buttons, grid_content_height, list_content_height,
-    scrollbar_viewport, DrawerLayout, ReaderLayout, BOOK_HEIGHT, BOOKS_TOP, GRID_TOP, READER_TOP,
+    back_button_rect, chapter_buttons, grid_content_height, list_content_height, scrollbar_viewport,
+    settings_button_rect, ui_scale, DrawerLayout, MAX_ZOOM, MIN_ZOOM, ReaderLayout, SettingsLayout,
+    ZOOM_STEP, BOOK_HEIGHT, BOOKS_TOP, GRID_TOP, READER_TOP,
 };
 use crate::ui::mouse::Input;
 use crate::ui::scroll::{update_scroll, ScrollState};
@@ -17,6 +18,8 @@ pub struct Game {
     pub chapter_scroll: ScrollState,
     pub reader_scroll: ScrollState,
     pub selected_word: Option<String>,
+    /// User zoom multiplier; adjusts the effective UI scale (see `ui_scale`).
+    pub zoom: f32,
     pub word_store: WordStateStore,
 }
 
@@ -28,6 +31,7 @@ impl Game {
             chapter_scroll: ScrollState::new(),
             reader_scroll: ScrollState::new(),
             selected_word: None,
+            zoom: 1.0,
             word_store,
         }
     }
@@ -42,14 +46,29 @@ pub fn update(
     screen: Vec2,
     reader_layout: Option<&ReaderLayout>,
 ) -> bool {
-    let app_state = game.state.clone();
-    match app_state {
-        AppState::BookSelection => update_book_selection(game, bible, input, screen),
-        AppState::ChapterSelection { book_id } => {
-            update_chapter_selection(game, bible, &book_id, input, screen);
-        }
-        AppState::Reader { book_id, .. } => {
-            update_reader(game, &book_id, input, screen, reader_layout);
+    let current = game.state.clone();
+    match current {
+        AppState::Settings { return_to } => update_settings(game, *return_to, input, screen),
+        other => {
+            let scale = ui_scale(screen, game.zoom);
+            // The settings button (top-right) exists on every normal screen.
+            if input.left_pressed && settings_button_rect(screen.x, scale).contains(input.mouse_pos)
+            {
+                enter_settings(game, other);
+            } else {
+                match other {
+                    AppState::BookSelection => {
+                        update_book_selection(game, bible, input, screen, scale);
+                    }
+                    AppState::ChapterSelection { book_id } => {
+                        update_chapter_selection(game, bible, &book_id, input, screen, scale);
+                    }
+                    AppState::Reader { book_id, .. } => {
+                        update_reader(game, &book_id, input, screen, scale, reader_layout);
+                    }
+                    AppState::Settings { .. } => unreachable!(),
+                }
+            }
         }
     }
     // Returns whether the word store changed this frame (used by the loop
@@ -57,13 +76,50 @@ pub fn update(
     game.word_store.is_dirty()
 }
 
-fn update_book_selection(game: &mut Game, bible: &Bible, input: &Input, screen: Vec2) {
+fn enter_settings(game: &mut Game, current: AppState) {
+    game.book_scroll.release_drag();
+    game.chapter_scroll.release_drag();
+    game.reader_scroll.release_drag();
+    game.state = AppState::Settings {
+        return_to: Box::new(current),
+    };
+}
+
+fn update_settings(game: &mut Game, return_to: AppState, input: &Input, screen: Vec2) {
+    if !input.left_pressed {
+        return;
+    }
+
+    let scale = ui_scale(screen, game.zoom);
+
+    if back_button_rect(scale).contains(input.mouse_pos) {
+        game.state = return_to;
+        return;
+    }
+
+    let layout = SettingsLayout::new(screen, scale);
+    if layout.zoom_in.contains(input.mouse_pos) {
+        game.zoom = (game.zoom + ZOOM_STEP).min(MAX_ZOOM);
+        return;
+    }
+    if layout.zoom_out.contains(input.mouse_pos) {
+        game.zoom = (game.zoom - ZOOM_STEP).max(MIN_ZOOM);
+    }
+}
+
+fn update_book_selection(
+    game: &mut Game,
+    bible: &Bible,
+    input: &Input,
+    screen: Vec2,
+    scale: f32,
+) {
     let books = bible.get_books_in_order();
 
-    let scrollbar = scrollbar_viewport(screen, BOOKS_TOP);
+    let scrollbar = scrollbar_viewport(screen, BOOKS_TOP, scale);
     let consumed = update_scroll(
         &mut game.book_scroll,
-        list_content_height(books.len()),
+        list_content_height(books.len(), scale),
         scrollbar,
         input,
     );
@@ -73,10 +129,10 @@ fn update_book_selection(game: &mut Game, bible: &Bible, input: &Input, screen: 
 
     // Hit-test the book list in content coordinates (scroll offset applied).
     let content_y = input.mouse_pos.y + game.book_scroll.offset;
-    if content_y < BOOKS_TOP {
+    if content_y < BOOKS_TOP * scale {
         return;
     }
-    let index = ((content_y - BOOKS_TOP) / BOOK_HEIGHT) as usize;
+    let index = ((content_y - BOOKS_TOP * scale) / (BOOK_HEIGHT * scale)) as usize;
     if let Some(book) = books.get(index) {
         game.state = AppState::ChapterSelection {
             book_id: book.id.clone(),
@@ -92,8 +148,9 @@ fn update_chapter_selection(
     book_id: &str,
     input: &Input,
     screen: Vec2,
+    scale: f32,
 ) {
-    if input.left_pressed && back_button_rect().contains(input.mouse_pos) {
+    if input.left_pressed && back_button_rect(scale).contains(input.mouse_pos) {
         game.state = AppState::BookSelection;
         game.selected_word = None;
         return;
@@ -104,10 +161,10 @@ fn update_chapter_selection(
     };
     let chapters = book.chapter_numbers();
 
-    let scrollbar = scrollbar_viewport(screen, GRID_TOP);
+    let scrollbar = scrollbar_viewport(screen, GRID_TOP, scale);
     let consumed = update_scroll(
         &mut game.chapter_scroll,
-        grid_content_height(chapters.len()),
+        grid_content_height(chapters.len(), scale),
         scrollbar,
         input,
     );
@@ -119,7 +176,7 @@ fn update_chapter_selection(
         input.mouse_pos.x,
         input.mouse_pos.y + game.chapter_scroll.offset,
     );
-    for (chapter, rect) in chapter_buttons(&chapters, screen.x, GRID_TOP) {
+    for (chapter, rect) in chapter_buttons(&chapters, screen.x, GRID_TOP, scale) {
         if rect.contains(content_pos) {
             game.state = AppState::Reader {
                 book_id: book_id.to_string(),
@@ -137,9 +194,10 @@ fn update_reader(
     book_id: &str,
     input: &Input,
     screen: Vec2,
+    scale: f32,
     reader_layout: Option<&ReaderLayout>,
 ) {
-    if input.left_pressed && back_button_rect().contains(input.mouse_pos) {
+    if input.left_pressed && back_button_rect(scale).contains(input.mouse_pos) {
         game.state = AppState::ChapterSelection {
             book_id: book_id.to_string(),
         };
@@ -151,7 +209,7 @@ fn update_reader(
         return;
     };
 
-    let scrollbar = scrollbar_viewport(screen, READER_TOP);
+    let scrollbar = scrollbar_viewport(screen, READER_TOP, scale);
     let consumed = update_scroll(
         &mut game.reader_scroll,
         layout.content_height,
@@ -162,10 +220,14 @@ fn update_reader(
         return;
     }
 
-    // Drawer status buttons take priority over word-selection clicks.
+    // Drawer controls take priority over word-selection clicks.
     if let Some(word) = game.selected_word.clone() {
-        let drawer = DrawerLayout::new(screen.x, screen.y);
+        let drawer = DrawerLayout::new(screen.x, screen.y, scale);
         if input.left_pressed {
+            if drawer.close_button.contains(input.mouse_pos) {
+                game.selected_word = None;
+                return;
+            }
             if let Some(button) = drawer.is_point_in_button(input.mouse_pos.x, input.mouse_pos.y)
             {
                 game.word_store.set_status(&word, button.status);

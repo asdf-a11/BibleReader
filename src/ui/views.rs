@@ -4,8 +4,8 @@ use macroquad::prelude::*;
 use crate::domain::{Book, Translations, WordStateStore, WordStatus};
 use crate::ui::layout::{
     back_button_rect, chapter_buttons, grid_content_height, list_content_height,
-    scrollbar_viewport, DrawerLayout, ReaderLayout, Theme, BOOKS_LEFT, BOOKS_TOP, BOOK_HEIGHT,
-    GRID_TOP, READER_FONT_SIZE, READER_TOP,
+    scrollbar_viewport, settings_button_rect, DrawerLayout, ReaderLayout, SettingsLayout, Theme,
+    BOOKS_LEFT, BOOKS_TOP, BOOK_HEIGHT, GRID_TOP, READER_FONT_SIZE, READER_TOP,
 };
 use crate::ui::scroll::{ScrollState, ScrollbarGeometry};
 
@@ -17,22 +17,21 @@ pub(crate) struct DrawContext<'a> {
     pub theme: &'a Theme,
     pub font: &'a Font,
     pub screen: Vec2,
+    /// Effective UI scale (window fit * user zoom); all geometry/fonts are
+    /// multiplied by this.
+    pub scale: f32,
 }
 
-pub(crate) fn render_book_selection(
-    ctx: &DrawContext,
-    font_size: f32,
-    books: &[&Book],
-    scroll: &ScrollState,
-) {
+pub(crate) fn render_book_selection(ctx: &DrawContext, books: &[&Book], scroll: &ScrollState) {
     clear_background(ctx.theme.background_color);
+    let font_size = READER_FONT_SIZE * ctx.scale;
     draw_title("Books", ctx, font_size);
 
     for (index, book) in books.iter().enumerate() {
-        let y = BOOKS_TOP + index as f32 * BOOK_HEIGHT - scroll.offset;
+        let y = BOOKS_TOP * ctx.scale + index as f32 * BOOK_HEIGHT * ctx.scale - scroll.offset;
         draw_text(
             &book.name,
-            BOOKS_LEFT,
+            BOOKS_LEFT * ctx.scale,
             y + font_size - 4.0,
             font_size - 4.0,
             ctx.theme.text_color,
@@ -40,23 +39,25 @@ pub(crate) fn render_book_selection(
     }
 
     let geometry = scroll.geometry(
-        list_content_height(books.len()),
-        scrollbar_viewport(ctx.screen, BOOKS_TOP),
+        list_content_height(books.len(), ctx.scale),
+        scrollbar_viewport(ctx.screen, BOOKS_TOP, ctx.scale),
     );
     draw_scrollbar(ctx.theme, &geometry);
+    draw_settings_button(ctx);
 }
 
 pub(crate) fn render_chapter_selection(
     ctx: &DrawContext,
-    font_size: f32,
     chapters: &[u32],
     scroll: &ScrollState,
 ) {
     clear_background(ctx.theme.background_color);
+    let font_size = READER_FONT_SIZE * ctx.scale;
     draw_title("Chapters", ctx, font_size);
     draw_back_button(ctx);
+    draw_settings_button(ctx);
 
-    let buttons = chapter_buttons(chapters, ctx.screen.x, GRID_TOP);
+    let buttons = chapter_buttons(chapters, ctx.screen.x, GRID_TOP, ctx.scale);
     for (chapter, rect) in &buttons {
         let y = rect.y - scroll.offset;
         draw_rectangle(rect.x, y, rect.w, rect.h, ctx.theme.panel_color);
@@ -73,8 +74,8 @@ pub(crate) fn render_chapter_selection(
     }
 
     let geometry = scroll.geometry(
-        grid_content_height(chapters.len()),
-        scrollbar_viewport(ctx.screen, GRID_TOP),
+        grid_content_height(chapters.len(), ctx.scale),
+        scrollbar_viewport(ctx.screen, GRID_TOP, ctx.scale),
     );
     draw_scrollbar(ctx.theme, &geometry);
 }
@@ -89,8 +90,9 @@ pub(crate) fn render_reader(
 ) {
     clear_background(ctx.theme.background_color);
     draw_back_button(ctx);
+    draw_settings_button(ctx);
 
-    let font_size = READER_FONT_SIZE;
+    let font_size = READER_FONT_SIZE * ctx.scale;
 
     // State highlight boxes behind each word.
     for word_layout in &layout.word_layouts {
@@ -138,12 +140,51 @@ pub(crate) fn render_reader(
         render_drawer(ctx, word, translations);
     }
 
-    let geometry = scroll.geometry(layout.content_height, scrollbar_viewport(ctx.screen, READER_TOP));
+    let geometry = scroll.geometry(
+        layout.content_height,
+        scrollbar_viewport(ctx.screen, READER_TOP, ctx.scale),
+    );
     draw_scrollbar(ctx.theme, &geometry);
 }
 
+pub(crate) fn render_settings(ctx: &DrawContext, zoom: f32) {
+    clear_background(ctx.theme.background_color);
+    let font_size = READER_FONT_SIZE * ctx.scale;
+    draw_title("Settings", ctx, font_size);
+    draw_back_button(ctx);
+
+    let layout = SettingsLayout::new(ctx.screen, ctx.scale);
+
+    let percent = (zoom * 100.0).round() as i32;
+    let label = format!("Zoom: {}%", percent);
+    let metrics = measure_text(&label, Some(ctx.font), font_size as u16, 1.0);
+    draw_text(
+        &label,
+        layout.zoom_label.center().x - metrics.width / 2.0,
+        layout.zoom_label.center().y + font_size / 2.0,
+        font_size,
+        ctx.theme.text_color,
+    );
+
+    draw_zoom_button(ctx, layout.zoom_out, "-");
+    draw_zoom_button(ctx, layout.zoom_in, "+");
+}
+
+fn draw_zoom_button(ctx: &DrawContext, rect: macroquad::math::Rect, symbol: &str) {
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, ctx.theme.panel_color);
+    let font_size = READER_FONT_SIZE * ctx.scale;
+    let metrics = measure_text(symbol, Some(ctx.font), font_size as u16, 1.0);
+    draw_text(
+        symbol,
+        rect.center().x - metrics.width / 2.0,
+        rect.center().y + font_size / 2.0 - 4.0,
+        font_size,
+        ctx.theme.text_color,
+    );
+}
+
 fn render_drawer(ctx: &DrawContext, word: &str, translations: &Translations) {
-    let drawer = DrawerLayout::new(ctx.screen.x, ctx.screen.y);
+    let drawer = DrawerLayout::new(ctx.screen.x, ctx.screen.y, ctx.scale);
 
     draw_rectangle(
         drawer.rect.x,
@@ -153,23 +194,27 @@ fn render_drawer(ctx: &DrawContext, word: &str, translations: &Translations) {
         ctx.theme.panel_color,
     );
 
+    let title_font = READER_FONT_SIZE * ctx.scale;
     draw_text(
         word,
         drawer.title_rect.x,
-        drawer.title_rect.y + READER_FONT_SIZE,
-        READER_FONT_SIZE,
+        drawer.title_rect.y + title_font,
+        title_font,
         ctx.theme.text_color,
     );
 
     let translation = translations.display(word);
-    let metrics = measure_text(&translation, Some(ctx.font), (READER_FONT_SIZE - 4.0) as u16, 1.0);
+    let trans_font = (READER_FONT_SIZE - 4.0) * ctx.scale;
+    let metrics = measure_text(&translation, Some(ctx.font), trans_font as u16, 1.0);
     draw_text(
         &translation,
         drawer.translation_rect.x,
         drawer.translation_rect.y + metrics.height,
-        READER_FONT_SIZE - 4.0,
+        trans_font,
         ctx.theme.text_color,
     );
+
+    draw_close_button(ctx, drawer.close_button);
 
     for button in &drawer.buttons {
         draw_rectangle(
@@ -179,42 +224,95 @@ fn render_drawer(ctx: &DrawContext, word: &str, translations: &Translations) {
             button.rect.h,
             ctx.theme.unseen_color,
         );
-        let metrics = measure_text(&button.label, Some(ctx.font), (READER_FONT_SIZE - 8.0) as u16, 1.0);
+        let label_font = (READER_FONT_SIZE - 8.0) * ctx.scale;
+        let metrics = measure_text(&button.label, Some(ctx.font), label_font as u16, 1.0);
         draw_text(
             &button.label,
             button.rect.center().x - metrics.width / 2.0,
             button.rect.center().y - metrics.height / 2.0,
-            READER_FONT_SIZE - 8.0,
+            label_font,
             ctx.theme.text_color,
         );
     }
 }
 
+/// An "X" glyph drawn with two strokes (font independent).
+fn draw_close_button(ctx: &DrawContext, rect: macroquad::math::Rect) {
+    let thickness = (2.0 * ctx.scale).max(1.0);
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, ctx.theme.panel_color);
+    let (x0, y0) = (rect.center().x, rect.center().y);
+    let inset = rect.h * 0.25;
+    draw_line(
+        x0 - inset,
+        y0 - inset,
+        x0 + inset,
+        y0 + inset,
+        thickness,
+        ctx.theme.text_color,
+    );
+    draw_line(
+        x0 + inset,
+        y0 - inset,
+        x0 - inset,
+        y0 + inset,
+        thickness,
+        ctx.theme.text_color,
+    );
+}
+
 fn draw_title(title: &str, ctx: &DrawContext, font_size: f32) {
     let metrics = measure_text(title, Some(ctx.font), font_size as u16, 1.0);
     let x = (ctx.screen.x - metrics.width) / 2.0;
-    draw_text(title, x, TITLE_Y, font_size, ctx.theme.text_color);
+    let y = TITLE_Y * ctx.scale;
+    draw_text(title, x, y, font_size, ctx.theme.text_color);
     draw_line(
-        x - TITLE_PADDING_X,
-        TITLE_Y + 10.0,
-        x + metrics.width + TITLE_PADDING_X,
-        TITLE_Y + 10.0,
-        2.0,
+        x - TITLE_PADDING_X * ctx.scale,
+        y + 10.0 * ctx.scale,
+        x + metrics.width + TITLE_PADDING_X * ctx.scale,
+        y + 10.0 * ctx.scale,
+        (2.0 * ctx.scale).max(1.0),
         ctx.theme.seen_color,
     );
 }
 
 fn draw_back_button(ctx: &DrawContext) {
-    let rect = back_button_rect();
+    let rect = back_button_rect(ctx.scale);
     draw_rectangle(rect.x, rect.y, rect.w, rect.h, ctx.theme.seen_color);
-    let metrics = measure_text("Back", Some(ctx.font), 20u16, 1.0);
+    let font_size = 20.0 * ctx.scale;
+    let metrics = measure_text("Back", Some(ctx.font), font_size as u16, 1.0);
     draw_text(
         "Back",
         rect.center().x - metrics.width / 2.0,
-        rect.center().y - metrics.height / 2.0,
-        20.0,
+        rect.y + rect.h / 2.0 + font_size / 2.0 - 4.0,
+        font_size,
         ctx.theme.text_color,
     );
+}
+
+fn draw_settings_button(ctx: &DrawContext) {
+    let rect = settings_button_rect(ctx.screen.x, ctx.scale);
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, ctx.theme.panel_color);
+
+    // Simple gear: a ring of ticks around a hollow circle. Drawn with shapes so
+    // it never depends on a font having a "gear" glyph.
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let r = rect.h * 0.26;
+    let teeth = 6;
+    for i in 0..teeth {
+        let angle = i as f32 / teeth as f32 * std::f32::consts::TAU;
+        let tx = cx + (r * 1.8) * angle.cos();
+        let ty = cy + (r * 1.8) * angle.sin();
+        draw_rectangle(
+            tx - r * 0.45,
+            ty - r * 0.45,
+            r * 0.9,
+            r * 0.9,
+            ctx.theme.text_color,
+        );
+    }
+    draw_circle(cx, cy, r * 1.4, ctx.theme.text_color);
+    draw_circle(cx, cy, r * 0.6, ctx.theme.panel_color);
 }
 
 fn draw_scrollbar(theme: &Theme, geometry: &ScrollbarGeometry) {

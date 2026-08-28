@@ -29,6 +29,12 @@ impl ScrollState {
         self.dragging = false;
     }
 
+    /// Stop an in-progress thumb drag without changing the offset (used when a
+    /// screen change makes the scrollbar disappear mid-drag).
+    pub fn release_drag(&mut self) {
+        self.dragging = false;
+    }
+
     pub fn clamp(&mut self, max_scroll: f32) {
         self.offset = self.offset.max(0.0).min(max_scroll.max(0.0));
     }
