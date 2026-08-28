@@ -1,375 +1,239 @@
+use macroquad::math::Vec2;
 use macroquad::prelude::*;
 
-use crate::domain::{Bible, WordStateStore, WordStatus};
+use crate::domain::{Book, Translations, WordStateStore, WordStatus};
 use crate::ui::layout::{
-    AppState, FontContext, Theme, DrawerLayout, ReaderLayout,
-    WordTokenLayout,
+    back_button_rect, chapter_buttons, grid_content_height, list_content_height,
+    scrollbar_viewport, DrawerLayout, ReaderLayout, Theme, BOOKS_LEFT, BOOKS_TOP, BOOK_HEIGHT,
+    GRID_TOP, READER_FONT_SIZE, READER_TOP,
 };
+use crate::ui::scroll::{ScrollState, ScrollbarGeometry};
 
-#[derive(Clone)]
-pub struct AppStateContext {
-    pub state: AppState,
-    pub bible: Bible,
-    pub word_store: WordStateStore,
-    pub theme: Theme,
-    pub font_context: Option<FontContext>,
+const TITLE_Y: f32 = 100.0;
+const TITLE_PADDING_X: f32 = 20.0;
+
+/// The shared drawing inputs for every screen.
+pub(crate) struct DrawContext<'a> {
+    pub theme: &'a Theme,
+    pub font: &'a Font,
+    pub screen: Vec2,
 }
 
-impl AppStateContext {
-    pub fn new(state: AppState, bible: Bible, word_store: WordStateStore, theme: Theme, font_context: Option<FontContext>) -> Self {
-        AppStateContext {
-            state,
-            bible,
-            word_store,
-            theme,
-            font_context,
-        }
-    }
+pub(crate) fn render_book_selection(
+    ctx: &DrawContext,
+    font_size: f32,
+    books: &[&Book],
+    scroll: &ScrollState,
+) {
+    clear_background(ctx.theme.background_color);
+    draw_title("Books", ctx, font_size);
 
-    pub fn set_state(&mut self, new_state: AppState) {
-        self.state = new_state;
-    }
-
-    pub fn get_font(&self) -> &Font {
-        &self.font_context.as_ref().unwrap().font
-    }
-
-    pub fn get_font_size(&self) -> f32 {
-        24.0
-    }
-
-    pub fn get_states(&self) -> &WordStateStore {
-        &self.word_store
-    }
-}
-
-pub struct BookSelectionView;
-
-impl BookSelectionView {
-    pub fn render(ctx: &AppStateContext, screen_width: f32, screen_height: f32, books: &std::collections::HashMap<String, crate::domain::Book>, scroll_offset: f32) {
-        let font = ctx.get_font();
-        let font_size = ctx.get_font_size();
-        let theme = &ctx.theme;
-
-        clear_background(theme.background_color);
-
-        let title = "Books";
-        let title_metrics = measure_text(title, Some(font), font_size as u16, 1.0);
-        let title_x = (screen_width - title_metrics.width) / 2.0;
-        let title_y = 100.0;
-
+    for (index, book) in books.iter().enumerate() {
+        let y = BOOKS_TOP + index as f32 * BOOK_HEIGHT - scroll.offset;
         draw_text(
-            title,
-            title_x,
-            title_y,
-            font_size,
-            theme.text_color,
-        );
-
-        let underline_y = title_y + 10.0;
-        draw_line(
-            title_x - 20.0,
-            underline_y,
-            title_x + title_metrics.width + 20.0,
-            underline_y,
-            2.0,
-            theme.seen_color,
-        );
-
-        let book_list_y = 150.0;
-        let book_height = 30.0;
-        
-        let books_vec: Vec<_> = books.values().collect();
-        let _max_visible = ((screen_height - book_list_y - 20.0) / book_height).floor() as usize;
-        let total_book_height = books_vec.len() as f32 * book_height;
-        let max_scroll = (total_book_height - (screen_height - book_list_y - 20.0)).max(0.0);
-        let visible_start = (scroll_offset / book_height).floor() as usize;
-        let visible_end = ((scroll_offset + screen_height - book_list_y - 20.0) / book_height).ceil() as usize;
-        let start_idx = visible_start.min(books_vec.len());
-        let end_idx = visible_end.min(books_vec.len());
-        
-        for i in start_idx..end_idx {
-            let book = &books_vec[i];
-            let book_y = book_list_y + (i as f32 * book_height) - scroll_offset;
-            
-            draw_text(
-                &book.name,
-                50.0,
-                book_y + font_size - 4.0,
-                font_size - 4.0,
-                theme.text_color,
-            );
-        }
-        
-        let scrollbar_y = book_list_y;
-        let scrollbar_height = screen_height - book_list_y - 20.0;
-        let scroll_ratio = if total_book_height > scrollbar_height {
-            scrollbar_height / total_book_height
-        } else {
-            1.0
-        };
-        let thumb_height = scrollbar_height * scroll_ratio;
-        let thumb_y = scrollbar_y + (scroll_offset / max_scroll.max(1.0)) * (scrollbar_height - thumb_height);
-        
-        draw_rectangle(
-            screen_width - 20.0,
-            scrollbar_y,
-            10.0,
-            scrollbar_height,
-            theme.seen_color,
-        );
-        
-        draw_rectangle(
-            screen_width - 20.0,
-            thumb_y,
-            10.0,
-            thumb_height,
-            theme.unseen_color,
+            &book.name,
+            BOOKS_LEFT,
+            y + font_size - 4.0,
+            font_size - 4.0,
+            ctx.theme.text_color,
         );
     }
+
+    let geometry = scroll.geometry(
+        list_content_height(books.len()),
+        scrollbar_viewport(ctx.screen, BOOKS_TOP),
+    );
+    draw_scrollbar(ctx.theme, &geometry);
 }
 
-pub struct ChapterSelectionView;
+pub(crate) fn render_chapter_selection(
+    ctx: &DrawContext,
+    font_size: f32,
+    chapters: &[u32],
+    scroll: &ScrollState,
+) {
+    clear_background(ctx.theme.background_color);
+    draw_title("Chapters", ctx, font_size);
+    draw_back_button(ctx);
 
-impl ChapterSelectionView {
-    pub fn render(ctx: &AppStateContext, screen_width: f32, _screen_height: f32, _book_id: &str) {
-        let font = ctx.get_font();
-        let font_size = ctx.get_font_size();
-        let theme = &ctx.theme;
+    let buttons = chapter_buttons(chapters, ctx.screen.x, GRID_TOP);
+    for (chapter, rect) in &buttons {
+        let y = rect.y - scroll.offset;
+        draw_rectangle(rect.x, y, rect.w, rect.h, ctx.theme.panel_color);
 
-        clear_background(theme.background_color);
-
-        let title = "Chapters";
-        let title_metrics = measure_text(title, Some(font), font_size as u16, 1.0);
-        let title_x = (screen_width - title_metrics.width) / 2.0;
-        let title_y = 100.0;
-
+        let label = chapter.to_string();
+        let metrics = measure_text(&label, Some(ctx.font), (font_size - 4.0) as u16, 1.0);
         draw_text(
-            title,
-            title_x,
-            title_y,
-            font_size,
-            theme.text_color,
+            &label,
+            rect.center().x - metrics.width / 2.0,
+            y + rect.h / 2.0 + (font_size - 4.0) / 2.0 - 4.0,
+            font_size - 4.0,
+            ctx.theme.text_color,
         );
-
-        let underline_y = title_y + 10.0;
-        draw_line(
-            title_x - 20.0,
-            underline_y,
-            title_x + title_metrics.width + 20.0,
-            underline_y,
-            2.0,
-            theme.seen_color,
-        );
-
-        let max_chapters = 50;
-        let button_size = 60.0;
-        let spacing = 20.0;
-        let buttons_per_row: f32 = 6.0;
-        let start_x = (screen_width - (buttons_per_row * (button_size + spacing) - spacing)) / 2.0;
-        let start_y = 150.0;
-
-        for chapter in 1..=max_chapters {
-            let row = (chapter - 1) / buttons_per_row as u32;
-            let col = (chapter - 1) % buttons_per_row as u32;
-
-            let x = start_x + col as f32 * (button_size + spacing);
-            let y = start_y + row as f32 * (button_size + spacing);
-
-            let button_rect = Rect {
-                x,
-                y,
-                w: button_size,
-                h: button_size,
-            };
-
-            draw_rectangle(
-                button_rect.x,
-                button_rect.y,
-                button_rect.w,
-                button_rect.h,
-                theme.panel_color,
-            );
-
-            draw_text(
-                &chapter.to_string(),
-                x + button_size / 2.0 - 10.0,
-                y + button_size / 2.0 + 8.0,
-                font_size - 4.0,
-                theme.text_color,
-            );
-
-            if is_mouse_button_down(MouseButton::Left) && ChapterSelectionView::is_mouse_over(button_rect) {
-                debug!("Chapter {} clicked", chapter);
-            }
-        }
     }
 
-    fn is_mouse_over(rect: Rect) -> bool {
-        let mouse_pos = mouse_position();
-        let mouse_x = mouse_pos.0;
-        let mouse_y = mouse_pos.1;
-
-        mouse_x >= rect.x
-            && mouse_x <= rect.x + rect.w
-            && mouse_y >= rect.y
-            && mouse_y <= rect.y + rect.h
-    }
+    let geometry = scroll.geometry(
+        grid_content_height(chapters.len()),
+        scrollbar_viewport(ctx.screen, GRID_TOP),
+    );
+    draw_scrollbar(ctx.theme, &geometry);
 }
 
-pub struct ReaderView;
+pub(crate) fn render_reader(
+    ctx: &DrawContext,
+    layout: &ReaderLayout,
+    scroll: &ScrollState,
+    selected_word: Option<&str>,
+    word_store: &WordStateStore,
+    translations: &Translations,
+) {
+    clear_background(ctx.theme.background_color);
+    draw_back_button(ctx);
 
-impl ReaderView {
-    pub fn render(
-        ctx: &AppStateContext,
-        screen_width: f32,
-        screen_height: f32,
-        book_id: &str,
-        chapter: u32,
-        layout: Option<&ReaderLayout>,
-        word_layout: Option<&WordTokenLayout>,
-    ) {
-        let font = ctx.get_font();
-        let font_size = ctx.get_font_size();
-        let theme = &ctx.theme;
-        let states = ctx.get_states();
+    let font_size = READER_FONT_SIZE;
 
-        clear_background(theme.background_color);
-
-        let _reader_x = 50.0;
-        let _reader_y = 100.0;
-        let _max_width = screen_width - 100.0;
-
-        let book = ctx.bible.books.get(book_id);
-        let (_text, tokens) = if let Some(b) = book {
-            if let Some(chapter_data) = b.chapters.get(&chapter) {
-                let full_text = chapter_data.verses.iter().map(|v| v.text.as_str()).collect::<Vec<_>>().join(" ");
-                let tokens = crate::domain::TextTokenizer::tokenize(&full_text);
-                (full_text, tokens)
-            } else {
-                ("Chapter not found".to_string(), Vec::new())
-            }
-        } else {
-            ("Book not found".to_string(), Vec::new())
+    // State highlight boxes behind each word.
+    for word_layout in &layout.word_layouts {
+        let status = word_store.get_status(&word_layout.token.to_string());
+        if status == WordStatus::Known {
+            continue; // Known words are not highlighted.
+        }
+        let color = match status {
+            WordStatus::Unseen => ctx.theme.unseen_color,
+            WordStatus::Seen => ctx.theme.seen_color,
+            WordStatus::Known => ctx.theme.background_color,
         };
+        let y = word_layout.highlight_rect.y - scroll.offset;
+        draw_rectangle(
+            word_layout.highlight_rect.x,
+            y,
+            word_layout.highlight_rect.w,
+            word_layout.highlight_rect.h,
+            color,
+        );
+    }
 
-        let layout = layout.expect("ReaderLayout should be provided");
+    // Word text on top of the highlights.
+    for word_layout in &layout.word_layouts {
+        let y = word_layout.rect.y - scroll.offset;
+        let text = word_layout.token.to_string();
+        draw_text(&text, word_layout.rect.x, y + font_size, font_size, ctx.theme.text_color);
+    }
 
-        for word_layout in &layout.word_layouts {
-            let status = states.get_status(&word_layout.token.to_string());
-            let color = match status {
-                WordStatus::Unseen => theme.unseen_color,
-                WordStatus::Seen => theme.seen_color,
-                WordStatus::Known => theme.text_color,
-            };
-
+    if let Some(word) = selected_word {
+        if let Some(word_layout) = layout
+            .word_layouts
+            .iter()
+            .find(|layout| layout.token.to_string() == word)
+        {
+            let y = word_layout.highlight_rect.y - scroll.offset;
             draw_rectangle(
                 word_layout.highlight_rect.x,
-                word_layout.highlight_rect.y,
+                y,
                 word_layout.highlight_rect.w,
                 word_layout.highlight_rect.h,
-                color,
+                ctx.theme.seen_color,
             );
         }
-
-        for word_layout in &layout.word_layouts {
-            let text_to_draw = word_layout.token.to_string();
-            draw_text(
-                &text_to_draw,
-                word_layout.rect.x,
-                word_layout.rect.y + font_size,
-                font_size,
-                theme.text_color,
-            );
-        }
-
-        if let Some(selected) = word_layout {
-            let status = states.get_status(&selected.token.to_string());
-            draw_rectangle(
-                selected.highlight_rect.x,
-                selected.highlight_rect.y,
-                selected.highlight_rect.w,
-                selected.highlight_rect.h,
-                if status == WordStatus::Unseen {
-                    theme.unseen_color
-                } else if status == WordStatus::Seen {
-                    theme.seen_color
-                } else {
-                    theme.text_color
-                },
-            );
-        }
-
-        if let Some(selected) = word_layout {
-            Self::render_drawer(ctx, screen_width, screen_height, selected, &tokens);
-        }
+        render_drawer(ctx, word, translations);
     }
 
-    pub fn render_drawer(
-        ctx: &AppStateContext,
-        screen_width: f32,
-        screen_height: f32,
-        word_layout: &WordTokenLayout,
-        _all_tokens: &[crate::domain::Token],
-    ) {
-        let _font = ctx.get_font();
-        let font_size = ctx.get_font_size();
-        let theme = &ctx.theme;
+    let geometry = scroll.geometry(layout.content_height, scrollbar_viewport(ctx.screen, READER_TOP));
+    draw_scrollbar(ctx.theme, &geometry);
+}
 
-        let drawer = DrawerLayout::new(screen_width, screen_height);
+fn render_drawer(ctx: &DrawContext, word: &str, translations: &Translations) {
+    let drawer = DrawerLayout::new(ctx.screen.x, ctx.screen.y);
 
+    draw_rectangle(
+        drawer.rect.x,
+        drawer.rect.y,
+        drawer.rect.w,
+        drawer.rect.h,
+        ctx.theme.panel_color,
+    );
+
+    draw_text(
+        word,
+        drawer.title_rect.x,
+        drawer.title_rect.y + READER_FONT_SIZE,
+        READER_FONT_SIZE,
+        ctx.theme.text_color,
+    );
+
+    let translation = translations.display(word);
+    let metrics = measure_text(&translation, Some(ctx.font), (READER_FONT_SIZE - 4.0) as u16, 1.0);
+    draw_text(
+        &translation,
+        drawer.translation_rect.x,
+        drawer.translation_rect.y + metrics.height,
+        READER_FONT_SIZE - 4.0,
+        ctx.theme.text_color,
+    );
+
+    for button in &drawer.buttons {
         draw_rectangle(
-            drawer.rect.x,
-            drawer.rect.y,
-            drawer.rect.w,
-            drawer.rect.h,
-            theme.panel_color,
+            button.rect.x,
+            button.rect.y,
+            button.rect.w,
+            button.rect.h,
+            ctx.theme.unseen_color,
         );
-
-        let word_text = word_layout.token.to_string();
+        let metrics = measure_text(&button.label, Some(ctx.font), (READER_FONT_SIZE - 8.0) as u16, 1.0);
         draw_text(
-            &word_text,
-            drawer.title_rect.x,
-            drawer.title_rect.y + font_size,
-            font_size,
-            theme.text_color,
+            &button.label,
+            button.rect.center().x - metrics.width / 2.0,
+            button.rect.center().y - metrics.height / 2.0,
+            READER_FONT_SIZE - 8.0,
+            ctx.theme.text_color,
         );
-
-        let translation = Self::get_translation(&word_text);
-        draw_text(
-            translation,
-            drawer.translation_rect.x,
-            drawer.translation_rect.y + font_size,
-            font_size - 4.0,
-            theme.text_color,
-        );
-
-        for button in &drawer.buttons {
-            draw_rectangle(
-                button.rect.x,
-                button.rect.y,
-                button.rect.w,
-                button.rect.h,
-                theme.unseen_color,
-            );
-
-            draw_text(
-                &button.label,
-                button.rect.x + 10.0,
-                button.rect.y + button.rect.h / 2.0 + 8.0,
-                font_size - 8.0,
-                theme.text_color,
-            );
-        }
     }
+}
 
-    fn get_translation(word: &str) -> &'static str {
-        match word {
-            "В" => "In",
-            "начале" => "beginning",
-            "сотворил" => "created",
-            "Бог" => "God",
-            _ => "translation not found",
-        }
+fn draw_title(title: &str, ctx: &DrawContext, font_size: f32) {
+    let metrics = measure_text(title, Some(ctx.font), font_size as u16, 1.0);
+    let x = (ctx.screen.x - metrics.width) / 2.0;
+    draw_text(title, x, TITLE_Y, font_size, ctx.theme.text_color);
+    draw_line(
+        x - TITLE_PADDING_X,
+        TITLE_Y + 10.0,
+        x + metrics.width + TITLE_PADDING_X,
+        TITLE_Y + 10.0,
+        2.0,
+        ctx.theme.seen_color,
+    );
+}
+
+fn draw_back_button(ctx: &DrawContext) {
+    let rect = back_button_rect();
+    draw_rectangle(rect.x, rect.y, rect.w, rect.h, ctx.theme.seen_color);
+    let metrics = measure_text("Back", Some(ctx.font), 20u16, 1.0);
+    draw_text(
+        "Back",
+        rect.center().x - metrics.width / 2.0,
+        rect.center().y - metrics.height / 2.0,
+        20.0,
+        ctx.theme.text_color,
+    );
+}
+
+fn draw_scrollbar(theme: &Theme, geometry: &ScrollbarGeometry) {
+    // Only draw a scrollbar when there is something to scroll.
+    if geometry.max_scroll <= 0.0 {
+        return;
     }
+    draw_rectangle(
+        geometry.track.x,
+        geometry.track.y,
+        geometry.track.w,
+        geometry.track.h,
+        theme.panel_color,
+    );
+    draw_rectangle(
+        geometry.thumb.x,
+        geometry.thumb.y,
+        geometry.thumb.w,
+        geometry.thumb.h,
+        theme.seen_color,
+    );
 }
