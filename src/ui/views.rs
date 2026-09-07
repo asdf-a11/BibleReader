@@ -1,7 +1,7 @@
 use macroquad::math::Vec2;
 use macroquad::prelude::*;
 
-use crate::domain::{Book, Translations, WordStateStore, WordStatus};
+use crate::domain::{Book, Token, Translations, WordStateStore, WordStatus};
 use crate::ui::layout::{
     back_button_rect, chapter_buttons, grid_content_height, list_content_height,
     scrollbar_viewport, settings_button_rect, DrawerLayout, ReaderLayout, SettingsLayout, Theme,
@@ -94,8 +94,12 @@ pub(crate) fn render_reader(
 
     let font_size = READER_FONT_SIZE * ctx.scale;
 
-    // State highlight boxes behind each word.
+    // State highlight boxes behind each word. Punctuation is not a real word,
+    // so it is never highlighted.
     for word_layout in &layout.word_layouts {
+        if matches!(word_layout.token, Token::Punctuation(_)) {
+            continue;
+        }
         let status = word_store.get_status(&word_layout.token.to_string());
         if status == WordStatus::Known {
             continue; // Known words are not highlighted.
