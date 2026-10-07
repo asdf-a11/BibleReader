@@ -38,7 +38,10 @@ fn test_missing_file_falls_back_to_empty() {
     let _ = std::fs::remove_file(&path);
 
     let loaded = desktop::load_from(&path);
-    assert!(loaded.is_empty(), "a missing file must yield an empty state map");
+    assert!(
+        loaded.is_empty(),
+        "a missing file must yield an empty state map"
+    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

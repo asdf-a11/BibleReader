@@ -13,7 +13,13 @@ fn raw(chapter: u32, verse: u32, text: &str, book_id: &str, book_name: &str) -> 
 
 fn genesis_chapter_1() -> Vec<RawVerse> {
     vec![
-        raw(1, 1, "В начале сотворил Бог небо и землю.", "Gen", "Genesis"),
+        raw(
+            1,
+            1,
+            "В начале сотворил Бог небо и землю.",
+            "Gen",
+            "Genesis",
+        ),
         raw(1, 2, "Земля же была безвидна и пуста.", "Gen", "Genesis"),
         raw(1, 3, "И сказал Бог: да будет свет.", "Gen", "Genesis"),
     ]
@@ -29,10 +35,18 @@ fn test_books_preserve_rst_file_order() {
     ]);
 
     let bible = Bible::from_raw_verses(verses);
-    let order: Vec<&str> = bible.get_books_in_order().iter().map(|b| b.id.as_str()).collect();
+    let order: Vec<&str> = bible
+        .get_books_in_order()
+        .iter()
+        .map(|b| b.id.as_str())
+        .collect();
     assert_eq!(order, vec!["Gen", "Exod"], "books must keep rst.json order");
 
-    let names: Vec<&str> = bible.get_books_in_order().iter().map(|b| b.name.as_str()).collect();
+    let names: Vec<&str> = bible
+        .get_books_in_order()
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
     assert_eq!(names, vec!["Genesis", "Exodus"]);
 }
 
@@ -46,7 +60,11 @@ fn test_book_order_is_not_sorted_alphabetically() {
         raw(1, 1, "...", "Revelation", "Revelation"),
     ];
     let bible = Bible::from_raw_verses(verses);
-    let order: Vec<&str> = bible.get_books_in_order().iter().map(|b| b.id.as_str()).collect();
+    let order: Vec<&str> = bible
+        .get_books_in_order()
+        .iter()
+        .map(|b| b.id.as_str())
+        .collect();
     assert_eq!(order, vec!["James", "Acts", "Revelation"]);
 }
 
@@ -86,7 +104,16 @@ fn test_get_chapter_tokens_join_all_verses() {
     let tokens = bible.get_chapter_tokens("Gen", 1).expect("chapter tokens");
 
     // Every word from all three verses must be present.
-    for expected in ["В", "начале", "сотворил", "Бог", "Земля", "сказал", "будет", "свет"] {
+    for expected in [
+        "В",
+        "начале",
+        "сотворил",
+        "Бог",
+        "Земля",
+        "сказал",
+        "будет",
+        "свет",
+    ] {
         assert!(
             tokens.iter().any(|t| t.as_word_str() == Some(expected)),
             "expected word '{expected}' in chapter text"

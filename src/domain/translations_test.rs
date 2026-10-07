@@ -21,7 +21,10 @@ fn test_display_joins_words_or_falls_back() {
     let translations = Translations::from_json(json).unwrap();
 
     assert_eq!(translations.display("начале"), "beginning, start");
-    assert_eq!(translations.display("несуществующее"), "translation not found");
+    assert_eq!(
+        translations.display("несуществующее"),
+        "translation not found"
+    );
 }
 
 #[test]

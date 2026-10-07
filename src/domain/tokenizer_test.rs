@@ -5,14 +5,20 @@ fn test_tokenize_simple_sentence() {
     let tokens = TextTokenizer::tokenize("В начале");
     assert_eq!(tokens.len(), 2);
     match &tokens[0] {
-        Token::Word { original, clean_key } => {
+        Token::Word {
+            original,
+            clean_key,
+        } => {
             assert_eq!(original, "В");
             assert_eq!(clean_key, "в");
         }
         _ => panic!("Expected Word token"),
     }
     match &tokens[1] {
-        Token::Word { original, clean_key } => {
+        Token::Word {
+            original,
+            clean_key,
+        } => {
             assert_eq!(original, "начале");
             assert_eq!(clean_key, "начале");
         }
@@ -46,7 +52,10 @@ fn test_tokenize_mixed_content() {
 #[test]
 fn test_punctuation_does_not_leak_into_clean_key() {
     let tokens = TextTokenizer::tokenize("Земля, была.");
-    let word = tokens.iter().find(|t| t.as_word_str() == Some("была")).expect("word");
+    let word = tokens
+        .iter()
+        .find(|t| t.as_word_str() == Some("была"))
+        .expect("word");
     match word {
         Token::Word { clean_key, .. } => assert_eq!(clean_key, "была"),
         _ => unreachable!(),

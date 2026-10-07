@@ -83,6 +83,21 @@ impl WordStatus {
             WordStatus::Known => "known",
         }
     }
+
+    /// Human readable name, used for the status buttons in the reader.
+    pub fn label(self) -> &'static str {
+        match self {
+            WordStatus::Unseen => "Unseen",
+            WordStatus::Seen => "Seen",
+            WordStatus::Known => "Known",
+        }
+    }
+}
+
+impl std::fmt::Display for WordStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
+    }
 }
 
 #[derive(Debug, Default)]

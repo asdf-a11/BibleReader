@@ -1,357 +1,395 @@
-use macroquad::math::{Rect, Vec2, vec2};
-use macroquad::prelude::Color;
+//! Pure, font-agnostic layout math.
+//!
+//! Nothing in here talks to a font: every function takes an explicit `measure`
+//! closure, so the geometry can be unit tested headless and the same code is
+//! used by the GUI tests.
 
-use crate::domain::{Token, WordStatus};
-use crate::ui::scroll::{SCROLLBAR_MARGIN, SCROLLBAR_WIDTH};
+use egui::{pos2, vec2, Rect, Vec2};
 
-pub const SCREEN_BOTTOM_MARGIN: f32 = 20.0;
+use crate::domain::Token;
 
-/// The virtual resolution the base layout constants below are designed for.
-/// Every on-screen geometry is this multiplied by `ui_scale(...)`, so the
-/// interface works at any window size (desktop or wasm on a phone).
-pub const DESIGN_WIDTH: f32 = 1024.0;
-pub const DESIGN_HEIGHT: f32 = 768.0;
+/// Font size of the bible text, in points.
+pub const READER_FONT_SIZE: f32 = 24.0;
+/// Line box height as a multiple of the font size.
+pub const LINE_HEIGHT_FACTOR: f32 = 1.5;
+/// Horizontal space inserted between two words. Punctuation that hugs a word
+/// (",", "." ...) does not get one.
+pub const WORD_GAP: f32 = 12.0;
+/// Space around a word that is drawn as its highlight / tap target.
+pub const WORD_PADDING: f32 = 3.0;
+/// Space kept below the last line so it never touches the translation drawer.
+pub const READER_BOTTOM_PADDING: f32 = 12.0;
 
-/// User zoom range (Settings screen); `ui_scale` multiplies the window fit by
-/// this so zooming in makes everything bigger.
+pub const CHAPTER_BUTTON_SIZE: f32 = 56.0;
+pub const CHAPTER_BUTTON_SPACING: f32 = 12.0;
+pub const BOOK_ROW_HEIGHT: f32 = 34.0;
+
+/// User zoom range (Settings screen). `egui::Context::set_zoom_factor` applies
+/// it, so every size in this module is in points and scales automatically.
 pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 2.0;
 pub const ZOOM_STEP: f32 = 0.25;
 
-pub const BOOKS_TOP: f32 = 150.0;
-pub const BOOKS_LEFT: f32 = 50.0;
-pub const BOOK_HEIGHT: f32 = 30.0;
-
-pub const GRID_TOP: f32 = 150.0;
-pub const BUTTON_SIZE: f32 = 60.0;
-pub const GRID_SPACING: f32 = 20.0;
-pub const GRID_COLS: u32 = 6;
-
-pub const READER_TOP: f32 = 100.0;
-pub const READER_LEFT: f32 = 50.0;
-pub const READER_FONT_SIZE: f32 = 24.0;
-pub const WORD_GAP: f32 = 8.0;
-pub const WORD_PADDING: f32 = 2.0;
-
-pub const FONT_PATH: &str = "NotoSans-VariableFont_wdth,wght.ttf";
 pub const BIBLE_PATH: &str = "rst.json";
 pub const TRANSLATIONS_PATH: &str = "translations.json";
 
-/// Uniform scale factor for all UI geometry.
+/// Measures the advance width of `text` rendered at `font_size`.
+pub type Measure<'a> = &'a dyn Fn(&str, f32) -> f32;
+
+/// Punctuation that needs breathing room on both sides (dashes and friends).
+const SPACED_PUNCTUATION: [char; 6] = ['—', '–', '-', '*', '·', '/'];
+/// Opening punctuation that hugs the word behind it, as in `«слово»`.
+const OPENING_PUNCTUATION: [char; 4] = ['«', '“', '‘', '('];
+
+fn punct_char(token: &Token) -> Option<char> {
+    match token {
+        Token::Punctuation(text) => text.chars().next(),
+        Token::Word { .. } => None,
+    }
+}
+
+/// The gap to insert in front of `next`, given the token before it.
 ///
-/// Starts from the window "fit" relative to the design resolution and is
-/// multiplied by the user-chosen zoom. Hit testing, drawing and layout all use
-/// this same factor, so a click at `mouse_position` lines up with the drawn
-/// rectangle no matter the window size.
-pub fn ui_scale(screen: Vec2, zoom: f32) -> f32 {
-    let fit = (screen.x / DESIGN_WIDTH).min(screen.y / DESIGN_HEIGHT);
-    (fit * zoom).clamp(0.1, 4.0)
+/// Only dashes and similar symbols get a gap of their own: ordinary
+/// punctuation stays glued to the word in front of it (`"землю."`) and
+/// opening quotes stay glued to the word behind it (`"«слово»"`).
+fn gap_before(prev: Option<&Token>, next: &Token) -> f32 {
+    let prev = match prev {
+        Some(prev) => prev,
+        None => return 0.0,
+    };
+
+    if let Some(c) = punct_char(next) {
+        return if is_one_of(&SPACED_PUNCTUATION, c) {
+            WORD_GAP
+        } else {
+            0.0
+        };
+    }
+
+    if let Some(c) = punct_char(prev) {
+        if is_one_of(&OPENING_PUNCTUATION, c) {
+            return 0.0;
+        }
+    }
+
+    WORD_GAP
 }
 
-/// The region holding the vertical scrollbar for a screen.
-pub fn scrollbar_viewport(screen: Vec2, top: f32, scale: f32) -> Rect {
-    let width = (SCROLLBAR_WIDTH + SCROLLBAR_MARGIN) * scale;
-    Rect::new(
-        screen.x - width,
-        top * scale,
-        SCROLLBAR_WIDTH * scale,
-        (screen.y - top * scale - SCREEN_BOTTOM_MARGIN * scale).max(0.0),
+fn is_one_of(chars: &[char], c: char) -> bool {
+    chars.contains(&c)
+}
+
+/// A piece of text positioned in the reader's content coordinate space.
+///
+/// A single [`Token`] can produce several items when the word is too wide for
+/// one line: it is then split at character boundaries and the parts continue on
+/// the following lines. Every part of a word is tappable, and `full_text` is
+/// always the whole word, so selecting a fragment selects the right word.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LaidOutToken {
+    /// Index into the source token list.
+    pub token_index: usize,
+    /// The (possibly partial) text to draw.
+    pub text: String,
+    /// The complete token this item belongs to.
+    pub full_text: String,
+    /// Whether the source token is a word (punctuation is not selectable).
+    pub is_word: bool,
+    /// Index of the line this item sits on.
+    pub line: usize,
+    /// Whether this item is the first part of its token.
+    pub starts_word: bool,
+    /// Whether this item is the last part of its token.
+    pub ends_word: bool,
+    /// Text box, relative to the top-left of the reader content.
+    pub rect: Rect,
+}
+
+impl LaidOutToken {
+    /// True when this item can be tapped/clicked to show a translation.
+    pub fn is_clickable(&self) -> bool {
+        self.is_word
+    }
+}
+
+/// Word wrapped layout of a chapter, ready to be painted and hit tested.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TextLayout {
+    pub items: Vec<LaidOutToken>,
+    pub line_height: f32,
+    pub line_count: usize,
+    /// Width the text was laid out for.
+    pub width: f32,
+}
+
+impl TextLayout {
+    /// Lay `tokens` out left to right, wrapping at `max_width`.
+    ///
+    /// Guarantees, relied upon by the reader and asserted in the tests:
+    /// - no item sticks out past `max_width` (this is what used to push words
+    ///   off the right edge of the window),
+    /// - a token wider than a whole line is split instead of overflowing.
+    pub fn build(
+        tokens: &[Token],
+        font_size: f32,
+        line_height: f32,
+        max_width: f32,
+        measure: Measure<'_>,
+    ) -> Self {
+        // The highlight / tap target extends `WORD_PADDING` beyond the text, so
+        // the text itself has to stay that much narrower than the panel.
+        let wrap_width = (max_width - WORD_PADDING * 2.0).max(1.0);
+        let mut layout = TextLayout {
+            items: Vec::new(),
+            line_height,
+            line_count: 0,
+            width: max_width,
+        };
+
+        let mut x = 0.0f32;
+        let mut line = 0usize;
+        let mut prev: Option<&Token> = None;
+
+        for (index, token) in tokens.iter().enumerate() {
+            let full_text = token.to_string();
+            let is_word = token.is_word();
+            let parts = split_to_fit(&full_text, wrap_width, font_size, measure);
+
+            for (part_index, part) in parts.iter().enumerate() {
+                let width = measure(part, font_size);
+                let mut gap = if part_index == 0 {
+                    gap_before(prev, token)
+                } else {
+                    0.0
+                };
+
+                if x > 0.0 && x + gap + width > wrap_width {
+                    line += 1;
+                    x = 0.0;
+                    gap = 0.0;
+                }
+
+                x += gap;
+                layout.items.push(LaidOutToken {
+                    token_index: index,
+                    text: part.clone(),
+                    full_text: full_text.clone(),
+                    is_word,
+                    line,
+                    starts_word: part_index == 0,
+                    ends_word: part_index + 1 == parts.len(),
+                    rect: Rect::from_min_size(
+                        pos2(x, line as f32 * line_height),
+                        vec2(width, line_height),
+                    ),
+                });
+                x += width;
+            }
+
+            prev = Some(token);
+        }
+
+        layout.line_count = if layout.items.is_empty() { 0 } else { line + 1 };
+        layout
+    }
+
+    /// Total height of the laid out text, in points.
+    pub fn height(&self) -> f32 {
+        self.line_count as f32 * self.line_height
+    }
+
+    /// The highlight / tap target of an item.
+    pub fn highlight_rect(&self, item: &LaidOutToken) -> Rect {
+        Rect::from_min_max(
+            pos2(
+                item.rect.left() - WORD_PADDING,
+                item.rect.top() - WORD_PADDING * 0.5,
+            ),
+            pos2(
+                item.rect.right() + WORD_PADDING,
+                item.rect.bottom() + WORD_PADDING * 0.5,
+            ),
+        )
+    }
+
+    /// The items of one line, in reading order.
+    pub fn line(&self, line: usize) -> impl Iterator<Item = &LaidOutToken> {
+        self.items.iter().filter(move |item| item.line == line)
+    }
+
+    /// The slice of [`TextLayout::items`] holding lines `first..=last`.
+    ///
+    /// Items are pushed in reading order, so every line occupies one contiguous
+    /// run and the run is found by binary searching for the first item on
+    /// `first`. That keeps the reader's per-frame painting proportional to the
+    /// number of visible words instead of the length of the chapter.
+    pub fn item_range_for_lines(&self, first: usize, last: usize) -> std::ops::Range<usize> {
+        if self.items.is_empty() || first > last {
+            return 0..0;
+        }
+        let start = self
+            .items
+            .partition_point(|item| item.line < first)
+            .min(self.items.len());
+        let end = self
+            .items
+            .partition_point(|item| item.line <= last)
+            .max(start);
+        start..end
+    }
+
+    /// The first tappable occurrence of `word`, matched exactly as drawn.
+    pub fn item_for_word(&self, word: &str) -> Option<&LaidOutToken> {
+        self.items
+            .iter()
+            .find(|item| item.is_clickable() && item.full_text == word)
+    }
+}
+
+/// Split `text` into chunks that each fit within `max_width`, breaking at
+/// character boundaries. Text that already fits comes back as a single chunk.
+fn split_to_fit(text: &str, max_width: f32, font_size: f32, measure: Measure<'_>) -> Vec<String> {
+    if measure(text, font_size) <= max_width {
+        return vec![text.to_string()];
+    }
+
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        current.push(ch);
+        if measure(&current, font_size) <= max_width {
+            continue;
+        }
+        // The character we just added does not fit: close the current chunk
+        // here and carry the character over to the next one.
+        let carried = current.pop();
+        match carried {
+            Some(carried) if !current.is_empty() => {
+                current.push(carried);
+                parts.push(std::mem::take(&mut current));
+            }
+            // A single character is wider than the line; splitting cannot help.
+            _ => return vec![text.to_string()],
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+/// Number of buttons per row that fit in `available_width`.
+pub fn grid_columns(available_width: f32, size: f32, spacing: f32) -> usize {
+    if available_width <= 0.0 || size <= 0.0 {
+        return 1;
+    }
+    (((available_width + spacing) / (size + spacing)).floor() as usize).max(1)
+}
+
+/// Rect of the `index`-th button of a grid centred in `available_width`.
+pub fn grid_button_rect(
+    index: usize,
+    available_width: f32,
+    top: f32,
+    size: f32,
+    spacing: f32,
+) -> Rect {
+    let columns = grid_columns(available_width, size, spacing);
+    let row = index / columns;
+    let col = index % columns;
+    let row_width = columns as f32 * size + (columns as f32 - 1.0) * spacing;
+    let start_x = ((available_width - row_width) / 2.0).max(0.0);
+    Rect::from_min_size(
+        pos2(
+            start_x + col as f32 * (size + spacing),
+            top + row as f32 * (size + spacing),
+        ),
+        vec2(size, size),
     )
 }
 
-pub fn back_button_rect(scale: f32) -> Rect {
-    Rect::new(16.0 * scale, 16.0 * scale, 80.0 * scale, 36.0 * scale)
-}
-
-/// Settings button pinned to the top-right corner of every screen.
-pub fn settings_button_rect(screen_width: f32, scale: f32) -> Rect {
-    let w = 72.0 * scale;
-    let h = 36.0 * scale;
-    Rect::new(
-        screen_width - w - 16.0 * scale,
-        16.0 * scale,
-        w,
-        h,
-    )
-}
-
-pub fn list_content_height(book_count: usize, scale: f32) -> f32 {
-    book_count as f32 * BOOK_HEIGHT * scale
-}
-
-/// Rows are laid out left-to-right, top-to-bottom in a fixed-width grid.
-pub fn chapter_buttons(chapters: &[u32], screen_width: f32, top: f32, scale: f32) -> Vec<(u32, Rect)> {
-    let size = BUTTON_SIZE * scale;
-    let spacing = GRID_SPACING * scale;
-    let row_width = GRID_COLS as f32 * (size + spacing) - spacing;
-    let start_x = (screen_width - row_width).max(0.0) / 2.0;
-    let top = top * scale;
-
+/// Rect of every button of the chapter grid, in the same order as `chapters`.
+pub fn chapter_grid(
+    chapters: &[u32],
+    available_width: f32,
+    top: f32,
+    size: f32,
+    spacing: f32,
+) -> Vec<(u32, Rect)> {
     chapters
         .iter()
         .enumerate()
         .map(|(index, &chapter)| {
-            let row = index as u32 / GRID_COLS;
-            let col = index as u32 % GRID_COLS;
-            let x = start_x + col as f32 * (size + spacing);
-            let y = top + row as f32 * (size + spacing);
-            (chapter, Rect::new(x, y, size, size))
+            (
+                chapter,
+                grid_button_rect(index, available_width, top, size, spacing),
+            )
         })
         .collect()
 }
 
-pub fn grid_content_height(button_count: usize, scale: f32) -> f32 {
-    let rows = if button_count == 0 {
-        1
-    } else {
-        button_count.div_ceil(GRID_COLS as usize)
-    };
-    rows as f32 * (BUTTON_SIZE + GRID_SPACING) * scale
+/// Total height of a `rows` tall grid, including the spacing after the last
+/// row, so the scroll area reserves the right amount of room.
+pub fn grid_height(rows: usize, size: f32, spacing: f32) -> f32 {
+    rows as f32 * (size + spacing)
 }
 
-#[derive(Debug, Clone)]
-pub struct Theme {
-    pub unseen_color: Color,
-    pub seen_color: Color,
-    pub background_color: Color,
-    pub panel_color: Color,
-    pub text_color: Color,
-}
-
-impl Theme {
-    pub fn new() -> Self {
-        Theme {
-            unseen_color: Color::from_rgba(0, 229, 255, 128),
-            seen_color: Color::from_rgba(255, 213, 79, 128),
-            background_color: Color::from_rgba(16, 20, 24, 255),
-            panel_color: Color::from_rgba(24, 30, 36, 255),
-            text_color: Color::from_rgba(255, 255, 255, 255),
-        }
+/// Number of text lines `text` needs in a box `width` wide.
+pub fn wrapped_line_count(text: &str, font_size: f32, width: f32, measure: Measure<'_>) -> usize {
+    if text.trim().is_empty() {
+        return 1;
     }
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct LayoutEngine;
-
-impl LayoutEngine {
-    pub fn compute_token_width(
-        token: &Token,
-        measure: &dyn Fn(&str, f32) -> f32,
-        font_size: f32,
-    ) -> f32 {
-        match token {
-            Token::Word { original, .. } => measure(original, font_size),
-            Token::Punctuation(p) => measure(p, font_size),
-        }
-    }
-
-    /// Wrap tokens into lines that each fit within `max_w`.
-    pub fn compute_line_wrapping(
-        tokens: &[Token],
-        max_w: f32,
-        measure: &dyn Fn(&str, f32) -> f32,
-        font_size: f32,
-    ) -> Vec<Vec<Token>> {
-        let mut lines = Vec::new();
-        let mut current_line = Vec::new();
-        let mut current_width = 0.0;
-
-        for token in tokens {
-            let token_width = Self::compute_token_width(token, measure, font_size);
-            if current_width + token_width > max_w && !current_line.is_empty() {
-                lines.push(std::mem::take(&mut current_line));
-                current_width = 0.0;
-            }
-            current_width += token_width;
-            current_line.push(token.clone());
-        }
-
-        if !current_line.is_empty() {
-            lines.push(current_line);
-        }
-        lines
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct WordTokenLayout {
-    pub token: Token,
-    pub rect: Rect,
-    pub highlight_rect: Rect,
-}
-
-pub struct ReaderLayout {
-    pub word_layouts: Vec<WordTokenLayout>,
-    pub content_height: f32,
-}
-
-impl ReaderLayout {
-    pub fn new(
-        tokens: &[Token],
-        font_size: f32,
-        start_x: f32,
-        start_y: f32,
-        max_w: f32,
-        measure: &dyn Fn(&str, f32) -> f32,
-    ) -> Self {
-        let lines = LayoutEngine::compute_line_wrapping(tokens, max_w, measure, font_size);
-        let line_h = font_size * 1.5;
-        let line_height = font_size * 1.2;
-
-        let mut word_layouts = Vec::new();
-        for (line_index, line) in lines.iter().enumerate() {
-            let mut current_x = start_x;
-            let y = start_y + line_index as f32 * line_h;
-
-            for token in line {
-                let width = LayoutEngine::compute_token_width(token, measure, font_size);
-                let rect = Rect::new(current_x, y, width, line_height);
-                let highlight_rect = Rect::new(
-                    rect.x - WORD_PADDING,
-                    rect.y - WORD_PADDING,
-                    rect.w + WORD_PADDING * 2.0,
-                    rect.h + WORD_PADDING * 2.0,
-                );
-                word_layouts.push(WordTokenLayout {
-                    token: token.clone(),
-                    rect,
-                    highlight_rect,
-                });
-                current_x += width + WORD_GAP;
-            }
-        }
-
-        let line_count = lines.len();
-        ReaderLayout {
-            word_layouts,
-            content_height: start_y + line_count as f32 * line_h,
-        }
-    }
-
-    /// Hit-test in content coordinates (i.e. adjusted for the scroll offset)
-    /// against clickable word boxes. Punctuation is not clickable.
-    pub fn get_word_at_position(&self, x: f32, y: f32) -> Option<&WordTokenLayout> {
-        self.word_layouts
-            .iter()
-            .find(|layout| layout.token.is_word() && layout.highlight_rect.contains(vec2(x, y)))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ButtonLayout {
-    pub label: String,
-    pub rect: Rect,
-    pub status: WordStatus,
-}
-
-pub struct DrawerLayout {
-    pub rect: Rect,
-    pub title_rect: Rect,
-    pub translation_rect: Rect,
-    pub close_button: Rect,
-    pub buttons: Vec<ButtonLayout>,
-}
-
-impl DrawerLayout {
-    /// Bottom section of the screen holding the selected word, its translation,
-    /// and the three status buttons. The drawer is anchored to the bottom of the
-    /// actual window (so it works on any screen height); everything inside it
-    /// scales with `scale`. It grows when a small screen would otherwise not
-    /// have room for all its contents, and the status buttons shrink to fit the
-    /// window width.
-    pub fn new(screen_w: f32, screen_h: f32, scale: f32) -> Self {
-        let fraction = if screen_h < 500.0 { 0.5 } else { 0.333 };
-        let drawer_h = (screen_h * fraction).max(220.0 * scale).min(screen_h);
-        let drawer_y = screen_h - drawer_h;
-
-        let rect = Rect::new(0.0, drawer_y, screen_w, drawer_h);
-
-        // Close ("X") button pinned to the top-right of the drawer.
-        let close_button = Rect::new(
-            rect.right() - 46.0 * scale - 10.0 * scale,
-            drawer_y + 10.0 * scale,
-            46.0 * scale,
-            36.0 * scale,
-        );
-
-        let title_rect = Rect::new(
-            20.0 * scale,
-            drawer_y + 16.0 * scale,
-            (close_button.x - 20.0 * scale - 8.0 * scale).max(0.0),
-            24.0 * scale,
-        );
-        let translation_rect =
-            Rect::new(20.0 * scale, drawer_y + 52.0 * scale, screen_w - 40.0 * scale, 60.0 * scale);
-
-        let button_height = 40.0 * scale;
-        let gap = 10.0 * scale;
-        let max_button_width = ((screen_w - 2.0 * gap) - gap * 2.0) / 3.0;
-        let button_width = (100.0 * scale).min(max_button_width.max(1.0));
-        let total_width = button_width * 3.0 + gap * 2.0;
-        let start_x = ((screen_w - total_width) / 2.0).max(0.0);
-        let button_y = drawer_y + drawer_h - 70.0 * scale;
-
-        let make_button = |label: &str, index: u32, status: WordStatus| ButtonLayout {
-            label: label.to_string(),
-            rect: Rect::new(
-                start_x + index as f32 * (button_width + gap),
-                button_y,
-                button_width,
-                button_height,
-            ),
-            status,
+    let space = measure(" ", font_size);
+    let mut lines = 1;
+    let mut current_width = 0.0;
+    for word in text.split_whitespace() {
+        let word_width = measure(word, font_size);
+        let needed = if current_width == 0.0 {
+            word_width
+        } else {
+            current_width + space + word_width
         };
-
-        let buttons = vec![
-            make_button("Unseen", 0, WordStatus::Unseen),
-            make_button("Seen", 1, WordStatus::Seen),
-            make_button("Known", 2, WordStatus::Known),
-        ];
-
-        DrawerLayout {
-            rect,
-            title_rect,
-            translation_rect,
-            close_button,
-            buttons,
+        if needed > width && current_width > 0.0 {
+            lines += 1;
+            current_width = word_width;
+        } else {
+            current_width = needed;
         }
     }
-
-    pub fn is_point_in_button(&self, x: f32, y: f32) -> Option<&ButtonLayout> {
-        self.buttons
-            .iter()
-            .find(|btn| btn.rect.contains(vec2(x, y)))
-    }
+    lines
 }
 
-/// Layout of the Settings screen: a zoom label and the zoom in/out buttons.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SettingsLayout {
-    pub zoom_out: Rect,
-    pub zoom_in: Rect,
-    pub zoom_label: Rect,
+/// Height of the translation drawer that covers the bottom of the reader.
+///
+/// `available_height` is the height of the reader panel; the drawer never takes
+/// more than [`DRAWER_MAX_FRACTION`] of it so the text always stays usable.
+pub const DRAWER_MAX_FRACTION: f32 = 0.6;
+pub const DRAWER_TITLE_SIZE: f32 = 22.0;
+pub const DRAWER_TEXT_SIZE: f32 = 18.0;
+pub const DRAWER_PADDING: f32 = 12.0;
+
+pub fn drawer_height(translation_lines: usize, font_size: f32, available_height: f32) -> f32 {
+    let title_h = DRAWER_TITLE_SIZE * 1.4;
+    let text_h = DRAWER_TEXT_SIZE * 1.4 * translation_lines.max(1) as f32;
+    let buttons_h = font_size * 1.6;
+    let wanted = DRAWER_PADDING * 2.0 + title_h + text_h + buttons_h;
+    wanted
+        .min((available_height * DRAWER_MAX_FRACTION).max(0.0))
+        .max(0.0)
 }
 
-impl SettingsLayout {
-    pub fn new(screen: Vec2, scale: f32) -> Self {
-        let button_h = 52.0 * scale;
-        let gap = 24.0 * scale;
-        let margin = 16.0 * scale;
-        // Shrink the buttons on narrow screens so they never overflow the width.
-        let button_w = (140.0 * scale).min(((screen.x - gap - 2.0 * margin) / 2.0).max(1.0));
-        let total = button_w * 2.0 + gap;
-        let start_x = ((screen.x - total) / 2.0).max(0.0);
-        let y = screen.y * 0.4;
+/// Extra scroll room reserved below the last line so it can be scrolled clear
+/// of the translation drawer.
+pub fn reader_bottom_space(drawer_height: f32) -> f32 {
+    drawer_height + READER_BOTTOM_PADDING
+}
 
-        SettingsLayout {
-            zoom_out: Rect::new(start_x, y, button_w, button_h),
-            zoom_in: Rect::new(start_x + button_w + gap, y, button_w, button_h),
-            zoom_label: Rect::new(start_x, y - 64.0 * scale, total, 40.0 * scale),
-        }
-    }
+/// A `height` tall box pinned to the bottom edge of `area`.
+pub fn bottom_band(area: Rect, height: f32) -> Rect {
+    let height = height.clamp(0.0, area.height());
+    Rect::from_min_size(
+        pos2(area.left(), area.bottom() - height),
+        Vec2::new(area.width(), height),
+    )
 }

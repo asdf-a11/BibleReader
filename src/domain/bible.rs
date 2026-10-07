@@ -19,7 +19,8 @@ impl Bible {
                 book_order.push(book_id.clone());
             }
 
-            books.entry(book_id)
+            books
+                .entry(book_id)
                 .and_modify(|book| append_verse(book, &verse))
                 .or_insert_with(|| Book::from_verse(&verse));
         }
@@ -41,7 +42,9 @@ impl Bible {
 
     /// The full, tokenized text of a chapter (all verses joined together).
     pub fn get_chapter_tokens(&self, book_id: &str, chapter: u32) -> Option<Vec<Token>> {
-        Some(TextTokenizer::tokenize(&self.get_chapter_text(book_id, chapter)?))
+        Some(TextTokenizer::tokenize(
+            &self.get_chapter_text(book_id, chapter)?,
+        ))
     }
 
     pub fn get_chapter_text(&self, book_id: &str, chapter: u32) -> Option<String> {
@@ -60,10 +63,13 @@ impl Book {
 
     fn from_verse(verse: &RawVerse) -> Self {
         let mut chapters = HashMap::new();
-        chapters.insert(verse.chapter, Chapter {
-            number: verse.chapter,
-            verses: vec![Verse::from_raw(verse)],
-        });
+        chapters.insert(
+            verse.chapter,
+            Chapter {
+                number: verse.chapter,
+                verses: vec![Verse::from_raw(verse)],
+            },
+        );
         Book {
             id: verse.book_id.clone(),
             name: verse.book_name.clone(),

@@ -1,168 +1,92 @@
-pub(crate) mod layout;
-mod mouse;
-mod scroll;
-mod state;
-mod update;
-mod views;
+//! The egui front end.
+//!
+//! Every screen is drawn from the pure layout code in [`layout`], which is
+//! what keeps the "nothing may stick out of the window" guarantee testable.
 
-pub use update::Game;
+pub mod fonts;
+pub mod layout;
+pub mod lists;
+pub mod reader;
+pub mod state;
+pub mod theme;
 
-use macroquad::prelude::*;
+use egui::{CentralPanel, Panel, RichText, Ui};
 
-use crate::domain::{
-    load_bible_from_rst, load_states, load_translations, save_states, Bible, Translations,
-    WordStateStore,
-};
-use crate::ui::layout::{
-    ui_scale, ReaderLayout, Theme, BIBLE_PATH, FONT_PATH, READER_FONT_SIZE, READER_LEFT,
-    READER_TOP, TRANSLATIONS_PATH,
-};
-use crate::ui::mouse::{Input, MouseState};
+use crate::app::App;
 use crate::ui::state::AppState;
-use crate::ui::update::update;
+use crate::ui::theme::Theme;
 
 #[cfg(test)]
-mod mouse_test;
-#[cfg(test)]
-mod scroll_test;
-#[cfg(test)]
-mod update_test;
+mod gui_test;
 #[cfg(test)]
 mod layout_test;
 
-pub async fn run() {
-    let font = match load_ttf_font(FONT_PATH).await {
-        Ok(font) => font,
-        Err(e) => {
-            error!("Failed to load font '{}': {}", FONT_PATH, e);
-            return;
-        }
-    };
-    set_default_font(font.clone());
-    let measure = make_measure(&font);
+/// Draw one frame of the whole application.
+pub fn show(ui: &mut Ui, app: &mut App) {
+    // The colours and the scroll bar style are installed once, when the app is
+    // created (see [`crate::ui::theme::install`]), so that even the first frame
+    // is drawn the way we want it. Only the zoom has to be pushed every frame,
+    // because the user can change it.
+    ui.ctx().set_zoom_factor(app.zoom);
 
-    let bible = match load_bible_from_rst(BIBLE_PATH).await {
-        Ok(bible) => bible,
-        Err(e) => {
-            error!("Failed to load bible '{}': {}", BIBLE_PATH, e);
-            return;
-        }
-    };
-
-    let translations = match load_translations(TRANSLATIONS_PATH).await {
-        Ok(t) => t,
-        Err(e) => {
-            error!("Failed to load translations '{}': {}", TRANSLATIONS_PATH, e);
-            return;
-        }
-    };
-
-    let theme = Theme::new();
-    let mut game = Game::new(WordStateStore::from_states(load_states()));
-    let mut mouse = MouseState::new();
-
-    loop {
-        let screen = vec2(screen_width(), screen_height());
-        let scale = ui_scale(screen, game.zoom);
-        mouse.update(is_mouse_button_down(MouseButton::Left), mouse_wheel());
-
-        let input = Input::from_mouse(&mouse, vec2(mouse_position().0, mouse_position().1));
-        let reader_layout = build_reader_layout(&game.state, &bible, screen, scale, &measure);
-
-        update(&mut game, &bible, &input, screen, reader_layout.as_ref());
-
-        if game.word_store.is_dirty() {
-            match save_states(&game.word_store.as_map()) {
-                Ok(()) => game.word_store.clear_dirty(),
-                Err(e) => error!("Failed to save word states: {}", e),
-            }
-        }
-
-        render(
-            &game,
-            &bible,
-            &font,
-            &translations,
-            &theme,
-            screen,
-            scale,
-            reader_layout.as_ref(),
-        );
-
-        next_frame().await;
+    if let Some(error) = app.data.load_error.clone() {
+        show_error(ui, &error);
+        return;
     }
+
+    show_toolbar(ui, app);
+
+    // The state is cloned so the screens can borrow `app` mutably.
+    let current = app.state.clone();
+    CentralPanel::default().show(ui, |ui| match current {
+        AppState::BookSelection => lists::show_books(ui, app),
+        AppState::ChapterSelection { ref book_id } => lists::show_chapters(ui, app, book_id),
+        AppState::Reader {
+            ref book_id,
+            chapter,
+        } => reader::show(ui, app, book_id, chapter),
+        AppState::Settings { .. } => lists::show_settings(ui, app),
+    });
 }
 
-/// Build the layout for the current chapter if the app is on the reader screen.
-/// The run loop owns the font, so measuring is not available in `update` /
-/// headless tests; they pass a fake measurement closure instead.
-fn build_reader_layout(
-    state: &AppState,
-    bible: &Bible,
-    screen: Vec2,
-    scale: f32,
-    measure: &dyn Fn(&str, f32) -> f32,
-) -> Option<ReaderLayout> {
-    let (book_id, chapter) = match state {
-        AppState::Reader { book_id, chapter } => (book_id.clone(), *chapter),
-        _ => return None,
-    };
-    let tokens = bible.get_chapter_tokens(&book_id, chapter)?;
-    let max_width = (screen.x - READER_LEFT * scale * 2.0).max(100.0 * scale);
-    Some(ReaderLayout::new(
-        &tokens,
-        READER_FONT_SIZE * scale,
-        READER_LEFT * scale,
-        READER_TOP * scale,
-        max_width,
-        measure,
-    ))
-}
-
-fn make_measure(font: &Font) -> impl Fn(&str, f32) -> f32 + '_ {
-    move |text, size| measure_text(text, Some(font), size as u16, 1.0).width
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render(
-    game: &Game,
-    bible: &Bible,
-    font: &Font,
-    translations: &Translations,
-    theme: &Theme,
-    screen: Vec2,
-    scale: f32,
-    reader_layout: Option<&ReaderLayout>,
-) {
-    let ctx = views::DrawContext {
-        theme,
-        font,
-        screen,
-        scale,
-    };
-    match &game.state {
-        AppState::BookSelection => {
-            views::render_book_selection(&ctx, &bible.get_books_in_order(), &game.book_scroll);
-        }
-        AppState::ChapterSelection { book_id } => {
-            let chapters = bible
-                .get_book(book_id)
-                .map(|b| b.chapter_numbers())
-                .unwrap_or_default();
-            views::render_chapter_selection(&ctx, &chapters, &game.chapter_scroll);
-        }
-        AppState::Reader { .. } => {
-            if let Some(layout) = reader_layout {
-                views::render_reader(
-                    &ctx,
-                    layout,
-                    &game.reader_scroll,
-                    game.selected_word.as_deref(),
-                    &game.word_store,
-                    translations,
-                );
+/// Toolbar with the back button, the current screen's title and the settings
+/// button. It is shown on every screen, so it lives outside the central panel.
+fn show_toolbar(ui: &mut Ui, app: &mut App) {
+    Panel::top("toolbar").show(ui, |ui| {
+        ui.horizontal(|ui| {
+            let back = ui
+                .add_sized([88.0, 30.0], egui::Button::new("Back"))
+                .on_hover_text("Back to the previous screen");
+            if back.clicked() {
+                app.go_back();
             }
-        }
-        AppState::Settings { .. } => views::render_settings(&ctx, game.zoom),
-    }
+
+            ui.label(RichText::new(app.state.title()).strong());
+
+            if let Some(error) = &app.save_error {
+                ui.label(RichText::new(error).color(Theme::new().error));
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let settings = ui
+                    .add_sized([96.0, 30.0], egui::Button::new("Settings"))
+                    .on_hover_text("Settings");
+                if settings.clicked() {
+                    app.open_settings();
+                }
+            });
+        });
+    });
+}
+
+fn show_error(ui: &mut Ui, error: &str) {
+    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+        ui.add_space(40.0);
+        ui.heading("Could not load the bible");
+        ui.label(error);
+        ui.label(format!(
+            "Expected '{}' in the working directory.",
+            layout::BIBLE_PATH
+        ));
+    });
 }
