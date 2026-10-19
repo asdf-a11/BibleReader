@@ -11,8 +11,8 @@ use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 
 use crate::app::{App, AppData, AppShell};
-use crate::domain::{Bible, MemoryStore, RawVerse, Translations, WordStatus};
-use crate::ui::layout::READER_BOTTOM_PADDING;
+use crate::domain::{Bible, MemoryStore, RawVerse, Translations, VerseTranslations, WordStatus};
+use crate::ui::layout::{DRAWER_MAX_FRACTION, READER_BOTTOM_PADDING};
 use crate::ui::reader;
 use crate::ui::state::AppState;
 
@@ -46,6 +46,15 @@ const TRANSLATIONS: &str = r#"{"translations":[
     {"word":"ночь","closestWords":["night"]}
 ]}"#;
 
+/// The English for the second sentence of [`CHAPTER`].
+const GLOSS: &str = "And God said let there be light, and there was light.";
+
+const VERSE_TRANSLATIONS: &str = r#"{"sentences":[
+    {"book_id":"gen","chapter":1,"verse":1,"index":1,
+     "russian":"И сказал Бог да будет свет, и стал свет.",
+     "english":"And God said let there be light, and there was light."}
+]}"#;
+
 const WINDOW: Vec2 = Vec2::new(900.0, 600.0);
 
 fn verse(chapter: u32, verse: u32, text: &str) -> RawVerse {
@@ -60,9 +69,12 @@ fn verse(chapter: u32, verse: u32, text: &str) -> RawVerse {
 }
 
 fn test_data() -> AppData {
+    let verse_translations =
+        VerseTranslations::from_json(VERSE_TRANSLATIONS).expect("verse translations parse");
     AppData {
         bible: Bible::from_raw_verses(vec![verse(1, 1, CHAPTER), verse(2, 1, "Второй")]),
         translations: Translations::from_json(TRANSLATIONS).expect("translations parse"),
+        verse_translations,
         load_error: None,
     }
 }
@@ -673,9 +685,10 @@ fn a_tap_after_a_drag_still_selects_a_word() {
 // ------------------------------------ bug: last line hidden by the drawer
 
 #[test]
-fn opening_the_drawer_reserves_room_to_scroll_past_it() {
+fn there_is_room_to_scroll_past_the_drawer_before_it_opens() {
     let mut harness = reader();
     let without = app(&harness).reader_content_height;
+    let text = app(&harness).reader_layout.height();
 
     click_word(&mut harness, "сотворил");
 
@@ -683,9 +696,28 @@ fn opening_the_drawer_reserves_room_to_scroll_past_it() {
     let drawer = app(&harness).reader_drawer.expect("the drawer is open");
     assert!(drawer.height() > 0.0);
     assert!(
-        with - without >= drawer.height(),
-        "opening the drawer must reserve at least its own height: {without} -> {with}, drawer {:?}",
+        without - text >= drawer.height(),
+        "the room below the text ({}) must already fit the drawer ({})",
+        without - text,
         drawer.height()
+    );
+    assert_eq!(with, without, "opening the drawer must not make the end jump");
+}
+
+#[test]
+fn the_last_line_can_be_scrolled_up_before_any_word_is_open() {
+    let mut harness = reader();
+    scroll_to_end(&mut harness);
+
+    let app = app(&harness);
+    let last = app.reader_layout.items.last().expect("the chapter has words");
+    let last_bottom =
+        app.reader_origin.y + app.reader_layout.highlight_rect(last).bottom() - app.reader_scroll;
+    let tallest_drawer_top =
+        app.reader_viewport.bottom() - app.reader_viewport.height() * DRAWER_MAX_FRACTION;
+    assert!(
+        last_bottom <= tallest_drawer_top,
+        "the last line ends at {last_bottom}, where a drawer (from {tallest_drawer_top}) would cover it"
     );
 }
 
@@ -748,4 +780,66 @@ fn a_status_change_is_saved_as_soon_as_it_happens() {
         "the state should already be written to the store"
     );
     assert!(app.save_error.is_none());
+}
+
+// ---------------------------------------------------------- english glosses
+
+#[test]
+fn the_english_is_drawn_under_its_sentence() {
+    let harness = reader();
+    let layout = &app(&harness).reader_layout;
+    let gloss: Vec<_> = layout.glosses.iter().map(|g| g.text.as_str()).collect();
+    assert_eq!(gloss.join(" "), GLOSS);
+
+    let gloss_top = layout.glosses[0].rect.top();
+    let gloss_bottom = layout.glosses.last().unwrap().rect.bottom();
+    // "свет." ends the translated sentence and "И увидел" starts the next one.
+    let last = layout
+        .items
+        .iter()
+        .rfind(|item| item.rect.bottom() <= gloss_top)
+        .expect("the sentence is above its English");
+    assert_eq!(last.full_text, ".");
+    let next = layout
+        .items
+        .iter()
+        .find(|item| item.rect.top() >= gloss_bottom)
+        .expect("the text goes on after the gloss");
+    assert_eq!(next.full_text, "И");
+    assert_eq!(next.rect.left(), 0.0, "the next sentence starts a new line");
+    for item in &layout.items {
+        assert!(
+            item.rect.bottom() <= gloss_top || item.rect.top() >= gloss_bottom,
+            "{:?} overlaps the English",
+            item.text
+        );
+    }
+}
+
+#[test]
+fn tapping_the_english_selects_nothing() {
+    let mut harness = reader();
+    assert!(
+        harness.query_by_label(GLOSS).is_none(),
+        "the English must not be a widget"
+    );
+    let (gloss, origin) = {
+        let app = app(&harness);
+        (app.reader_layout.glosses[0].rect, app.reader_origin)
+    };
+    click_at(&mut harness, gloss.translate(origin.to_vec2()).center());
+    assert_eq!(app(&harness).selected_word, None);
+    for word in GLOSS.split_whitespace() {
+        assert_eq!(app(&harness).status_of(word), WordStatus::Unseen);
+    }
+}
+
+#[test]
+fn a_chapter_without_translations_has_no_english() {
+    let mut harness = reader();
+    harness.state_mut().app_mut().go_back();
+    harness.state_mut().app_mut().open_chapter(2);
+    harness.run();
+    assert!(app(&harness).reader_layout.glosses.is_empty());
+    assert!(!app(&harness).reader_layout.items.is_empty());
 }

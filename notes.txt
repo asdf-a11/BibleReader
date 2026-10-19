@@ -1,0 +1,16 @@
+Task 2 - Scrolling lag on Fedora:
+Potential causes observed:
+- TextLayout::build() is called every frame in the scroll area closure, laying out all tokens. For large chapters this does repeated work.
+- wrapped_line_count() called every frame to size drawer.
+- Font measurement goes through egui's font system each time.
+
+This appears related to egui rendering/layout recomputation. With egui 0.36.2 on Linux (Fedora), continuous rebuilding of large layouts in scroll areas can cause lag. Limited optimization opportunities without larger refactor. Noted.
+
+The english translation all shows at the end of the file where as it should show under each russian sentence. 
+
+You need to look for some code which might already exist that will translate the bible to english sentence by sentence using gemma4:e4b. This might take a while so i want in the software you to make it such that it saves it progress periodically
+and i should be able to start the python script later and it picks up where it left off. Also it should print out info regulalry like every 2-3 minuits stating how far it has with translating it and estimate how much longer. It should save the translations and the mappings to a json file.
+This should be loaded by the rust bible reader app and the english is displayed as smaller slightly darker text under each line of russian text. The english text is not clickable like the russian text nor should it be highlighted like the russian text. This app is for learning russian for a english speaker
+through the russian bible so also it does not make sense that one should be able to click on the english stuff and it be added to their know / seen / unkown word lists. 
+
+You may want to run a few tests before letting the model translate the russian bible sentence by sentence. I tend to find the model can do it but sometimes it can output stuff that is not the translation that needs to be removed or better prompting to get it to just output what we want. 

@@ -3,6 +3,7 @@ mod models;
 mod storage;
 mod tokenizer;
 mod translations;
+mod verse_translations;
 mod word_state;
 
 pub use models::{Bible, RawVerse, Token, WordStatus};
@@ -13,6 +14,7 @@ pub use storage::{default_store, StateStore};
 pub use storage::{FileStore, MemoryStore};
 pub use tokenizer::TextTokenizer;
 pub use translations::Translations;
+pub use verse_translations::VerseTranslations;
 pub use word_state::WordStateStore;
 
 /// Read the newline-delimited JSON bible export into memory.
@@ -41,6 +43,20 @@ pub fn load_translations(path: &str) -> Result<Translations, String> {
     Translations::from_json(&content)
 }
 
+/// Read the sentence translations. They are optional: until
+/// `generate_verse_translations.py` has been run there is no file, and the
+/// reader simply shows the Russian on its own.
+pub fn load_verse_translations(path: &str) -> Result<VerseTranslations, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(VerseTranslations::default())
+        }
+        Err(e) => return Err(format!("Failed to read '{}': {}", path, e)),
+    };
+    VerseTranslations::from_json(&content)
+}
+
 #[cfg(test)]
 mod bible_test;
 #[cfg(test)]
@@ -51,5 +67,7 @@ mod storage_test;
 mod tokenizer_test;
 #[cfg(test)]
 mod translations_test;
+#[cfg(test)]
+mod verse_translations_test;
 #[cfg(test)]
 mod word_state_test;

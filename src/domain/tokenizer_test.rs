@@ -61,3 +61,28 @@ fn test_punctuation_does_not_leak_into_clean_key() {
         _ => unreachable!(),
     }
 }
+
+#[test]
+fn test_split_sentences_at_sentence_ends() {
+    assert_eq!(
+        TextTokenizer::split_sentences("И сказал Бог: да будет свет. И стал свет."),
+        vec!["И сказал Бог: да будет свет.", "И стал свет."]
+    );
+    assert_eq!(
+        TextTokenizer::split_sentences("зачем ты обманул меня? не за Рахиль ли!  Аминь…  да"),
+        vec!["зачем ты обманул меня?", "не за Рахиль ли!", "Аминь…", "да"]
+    );
+}
+
+#[test]
+fn test_split_sentences_keeps_closing_quotes_and_unfinished_verses() {
+    assert_eq!(
+        TextTokenizer::split_sentences("сказал: «иди сюда.» Он пошел,"),
+        vec!["сказал: «иди сюда.»", "Он пошел,"]
+    );
+    assert_eq!(TextTokenizer::split_sentences("Сыны Рувима,"), vec!["Сыны Рувима,"]);
+    // A full stop with no space after it (an abbreviation, say) does not end
+    // a sentence.
+    assert_eq!(TextTokenizer::split_sentences("в 3.5 локтя"), vec!["в 3.5 локтя"]);
+    assert!(TextTokenizer::split_sentences("   ").is_empty());
+}

@@ -425,11 +425,15 @@ fn the_bottom_band_is_pinned_to_the_bottom_and_clamped() {
 
 #[test]
 fn the_reserved_space_covers_the_drawer_and_a_gap() {
-    let drawer = 120.0;
-    assert!(reader_bottom_space(drawer) > drawer);
-    assert!((reader_bottom_space(drawer) - drawer - READER_BOTTOM_PADDING).abs() < 0.001);
-    // With no drawer open the last line still gets a little breathing room.
-    assert_eq!(reader_bottom_space(0.0), READER_BOTTOM_PADDING);
+    let panel = 600.0;
+    let tallest = panel * DRAWER_MAX_FRACTION;
+    // Room for the tallest drawer even while none is open, so the last line
+    // can be scrolled up before a word is tapped.
+    assert_eq!(reader_bottom_space(0.0, panel), tallest + READER_BOTTOM_PADDING);
+    assert_eq!(reader_bottom_space(120.0, panel), tallest + READER_BOTTOM_PADDING);
+    // A drawer can never be taller than that, but if it were it still fits.
+    assert_eq!(reader_bottom_space(500.0, panel), 500.0 + READER_BOTTOM_PADDING);
+    assert_eq!(reader_bottom_space(0.0, 0.0), READER_BOTTOM_PADDING);
 }
 
 // -------------------------------------------------------------- wrapped labels
@@ -443,4 +447,86 @@ fn wrapped_line_count_grows_as_the_box_narrows() {
     assert_eq!(wide, 1);
     assert!(narrow > wide, "{narrow} lines should be more than {wide}");
     assert_eq!(wrapped_line_count("   ", SIZE, 100.0, &measure), 1);
+}
+
+// ------------------------------------------------------------- english glosses
+
+fn passage(text: &str, gloss: Option<&str>) -> Passage {
+    Passage {
+        tokens: tokenize(text),
+        gloss: gloss.map(str::to_string),
+    }
+}
+
+fn build_passages(passages: &[Passage]) -> TextLayout {
+    TextLayout::build_passages(passages, SIZE, LINE, WIDTH, &fake_measure)
+}
+
+#[test]
+fn a_gloss_sits_between_its_sentence_and_the_next() {
+    let layout = build_passages(&[
+        passage("бог.", Some("God.")),
+        passage("свет.", None),
+    ]);
+    assert_eq!(layout.line_count, 2);
+    let first_line_bottom = layout.line(0).map(|i| i.rect.bottom()).fold(0.0, f32::max);
+    let gloss = &layout.glosses[0];
+    assert!(gloss.rect.top() >= first_line_bottom);
+    let next = layout.line(1).next().unwrap();
+    assert_eq!(next.full_text, "свет");
+    assert_eq!(next.rect.left(), 0.0, "no gap in front of a fresh line");
+    assert!(next.rect.top() >= layout.glosses.last().unwrap().rect.bottom());
+    assert!((layout.height() - (next.rect.bottom())).abs() < 0.001);
+}
+
+#[test]
+fn passages_without_a_gloss_flow_on_like_one_text() {
+    let joined = build("бог небо. свет и тьма.");
+    let split = build_passages(&[passage("бог небо.", None), passage("свет и тьма.", None)]);
+    assert_eq!(joined, split);
+}
+
+#[test]
+fn a_long_gloss_wraps_inside_the_width() {
+    let gloss = "In the beginning God created the heavens and the earth";
+    let layout = build_passages(&[passage("бог", Some(gloss))]);
+    assert!(layout.glosses.len() > 1);
+    let rejoined: Vec<_> = layout.glosses.iter().map(|g| g.text.as_str()).collect();
+    assert_eq!(rejoined.join(" "), gloss);
+    for line in &layout.glosses {
+        assert!(line.rect.right() <= WIDTH, "{:?} sticks out", line.text);
+    }
+}
+
+#[test]
+fn glosses_are_never_tap_targets() {
+    let layout = build_passages(&[passage("бог", Some("God"))]);
+    assert!(layout.items.iter().all(|item| item.full_text != "God"));
+    assert_eq!(layout.items.iter().filter(|i| i.is_clickable()).count(), 1);
+}
+
+#[test]
+fn a_blank_gloss_is_ignored() {
+    let with_blank = build_passages(&[passage("бог.", Some("  ")), passage("свет", None)]);
+    assert!(with_blank.glosses.is_empty());
+    assert_eq!(with_blank, build("бог. свет"));
+}
+
+#[test]
+fn the_visible_band_finds_items_and_glosses_by_height() {
+    let layout = build_passages(&[
+        passage("бог.", Some("God.")),
+        passage("свет.", Some("light.")),
+    ]);
+    let all = layout.item_range_for_y(f32::NEG_INFINITY, f32::INFINITY);
+    assert_eq!(all, 0..layout.items.len());
+    assert_eq!(layout.glosses_for_y(f32::NEG_INFINITY, f32::INFINITY).len(), 2);
+
+    // Just inside the second gloss line: band edges are inclusive, and the
+    // Russian line above ends exactly where the gloss starts.
+    let second = layout.glosses[1].rect.shrink(1.0);
+    let band = layout.item_range_for_y(second.top(), second.bottom());
+    assert!(band.is_empty(), "no Russian on the English line");
+    assert_eq!(layout.glosses_for_y(second.top(), second.bottom()).len(), 1);
+    assert_eq!(layout.item_range_for_y(-100.0, -50.0), 0..0);
 }

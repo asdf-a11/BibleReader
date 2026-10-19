@@ -19,7 +19,7 @@ class TextProcessor:
 
 
 class TranslationService:
-    def __init__(self, model: str = "gemma4:12b", temperature: float = 0.1, max_retries: int = 3):
+    def __init__(self, model: str = "gemma4:e4b", temperature: float = 0.1, max_retries: int = 3):
         self.model = model
         self.temperature = temperature
         self.max_retries = max_retries

@@ -31,6 +31,17 @@ pub struct Verse {
     pub tokens: Vec<Token>,
 }
 
+/// One sentence of a verse. A verse is split at `.`, `!`, `?` and `…`, so a
+/// long verse is several sentences and a verse that ends mid-sentence (on a
+/// comma, say) is a sentence of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sentence {
+    pub verse: u32,
+    /// Position of the sentence within its verse, starting at 0.
+    pub index: u32,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Token {
     Word { original: String, clean_key: String },

@@ -6,10 +6,13 @@
 use egui::{Pos2, Rect};
 
 use crate::domain::{
-    default_store, load_bible_from_rst, load_translations, Bible, StateStore, Translations,
-    WordStateStore, WordStatus,
+    default_store, load_bible_from_rst, load_translations, load_verse_translations, Bible,
+    StateStore, Translations, VerseTranslations, WordStateStore, WordStatus,
 };
-use crate::ui::layout::{TextLayout, BIBLE_PATH, MAX_ZOOM, MIN_ZOOM, TRANSLATIONS_PATH, ZOOM_STEP};
+use crate::ui::layout::{
+    TextLayout, BIBLE_PATH, MAX_ZOOM, MIN_ZOOM, TRANSLATIONS_PATH, VERSE_TRANSLATIONS_PATH,
+    ZOOM_STEP,
+};
 use crate::ui::state::AppState;
 
 /// The data the app runs on. Kept separate from [`App`] so tests can swap in a
@@ -17,6 +20,7 @@ use crate::ui::state::AppState;
 pub struct AppData {
     pub bible: Bible,
     pub translations: Translations,
+    pub verse_translations: VerseTranslations,
     /// Set when a data file could not be read; the UI shows it instead of
     /// silently rendering nothing.
     pub load_error: Option<String>,
@@ -27,19 +31,33 @@ impl AppData {
     pub fn load() -> Self {
         let bible = load_bible_from_rst(BIBLE_PATH);
         let translations = load_translations(TRANSLATIONS_PATH);
+        let verse_translations = load_verse_translations(VERSE_TRANSLATIONS_PATH);
 
-        let load_error = match (&bible, &translations) {
-            (Err(e), _) => Some(e.clone()),
-            (_, Err(e)) => Some(e.clone()),
+        let load_error = match (&bible, &translations, &verse_translations) {
+            (Err(e), _, _) => Some(e.clone()),
+            (_, Err(e), _) => Some(e.clone()),
+            (_, _, Err(e)) => Some(e.clone()),
             _ => None,
         };
 
         AppData {
             bible: bible.unwrap_or_default(),
             translations: translations.unwrap_or_default(),
+            verse_translations: verse_translations.unwrap_or_default(),
             load_error,
         }
     }
+}
+
+/// Everything a chapter's [`TextLayout`] depends on. Laying a long chapter out
+/// measures every word, which is far too slow to redo on every frame while
+/// scrolling.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReaderLayoutKey {
+    pub book_id: String,
+    pub chapter: u32,
+    pub width: f32,
+    pub pixels_per_point: f32,
 }
 
 /// Everything that changes while the app runs.
@@ -53,10 +71,13 @@ pub struct App {
     pub word_store: WordStateStore,
     /// Last persistence error, surfaced in the toolbar.
     pub save_error: Option<String>,
-    /// Layout of the chapter currently on screen. Republished by the reader on
-    /// every frame so tests (and the GUI tests in particular) can assert on
-    /// the real geometry instead of re-deriving it.
+    /// Layout of the chapter currently on screen. The reader keeps it between
+    /// frames and only rebuilds it when [`App::reader_layout_key`] changes;
+    /// tests (and the GUI tests in particular) assert on the real geometry
+    /// through it instead of re-deriving it.
     pub reader_layout: TextLayout,
+    /// What [`App::reader_layout`] was built for.
+    pub reader_layout_key: Option<ReaderLayoutKey>,
     /// Screen space position of the reader content's top-left corner, i.e. the
     /// origin [`TextLayout`] rects are relative to.
     pub reader_origin: Pos2,
@@ -86,6 +107,7 @@ impl App {
             word_store,
             save_error: None,
             reader_layout: TextLayout::default(),
+            reader_layout_key: None,
             reader_origin: Pos2::ZERO,
             reader_scroll: 0.0,
             reader_content_height: 0.0,

@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 
 use crate::app::{App, AppData};
-use crate::domain::{Bible, FileStore, MemoryStore, RawVerse, Translations, WordStatus};
+use crate::domain::{
+    Bible, FileStore, MemoryStore, RawVerse, Translations, VerseTranslations, WordStatus,
+};
 use crate::ui::layout::{MAX_ZOOM, MIN_ZOOM};
 use crate::ui::state::AppState;
 
@@ -30,6 +32,10 @@ const TRANSLATIONS: &str = r#"{"translations":[
     {"word":"небо","closestWords":["sky", "heaven"]}
 ]}"#;
 
+const VERSE_TRANSLATIONS: &str = r#"{"sentences":[
+    {"book_id":"gen","chapter":1,"verse":1,"index":0,"russian":"В начале","english":"In the beginning"}
+]}"#;
+
 fn verse(json: &str) -> RawVerse {
     serde_json::from_str(json).expect("test verse should parse")
 }
@@ -37,9 +43,12 @@ fn verse(json: &str) -> RawVerse {
 fn test_data() -> AppData {
     let bible = Bible::from_raw_verses(VERSES.iter().map(|json| verse(json)).collect());
     let translations = Translations::from_json(TRANSLATIONS).expect("translations should parse");
+    let verse_translations =
+        VerseTranslations::from_json(VERSE_TRANSLATIONS).expect("verse translations should parse");
     AppData {
         bible,
         translations,
+        verse_translations,
         load_error: None,
     }
 }

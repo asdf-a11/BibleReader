@@ -14,6 +14,9 @@ pub struct Theme {
     pub text: Color32,
     /// A word with no translation.
     pub dim_text: Color32,
+    /// The English shown under the Russian: a little darker than the text so
+    /// the Russian stays in front.
+    pub gloss: Color32,
     /// Errors, e.g. a state file that could not be written.
     pub error: Color32,
 }
@@ -45,6 +48,7 @@ impl Theme {
             panel: Color32::from_rgb(28, 34, 41),
             text: Color32::from_rgb(245, 247, 250),
             dim_text: Color32::from_rgb(150, 158, 168),
+            gloss: Color32::from_rgb(182, 190, 200),
             error: Color32::from_rgb(255, 120, 120),
         }
     }

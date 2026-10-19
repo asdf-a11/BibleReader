@@ -138,3 +138,25 @@ fn test_get_chapter_text_joins_verses_with_space() {
     assert!(text.ends_with("И сказал Бог: да будет свет."));
     assert!(text.contains("безвидна и пуста"));
 }
+
+#[test]
+fn test_chapter_sentences_are_numbered_within_their_verse() {
+    let bible = Bible::from_raw_verses(vec![
+        raw(1, 1, "В начале сотворил Бог небо и землю.", "Gen", "Genesis"),
+        raw(1, 2, "И сказал Бог: да будет свет. И стал свет.", "Gen", "Genesis"),
+    ]);
+    let sentences = bible.get_chapter_sentences("Gen", 1).unwrap();
+    let summary: Vec<_> = sentences
+        .iter()
+        .map(|s| (s.verse, s.index, s.text.as_str()))
+        .collect();
+    assert_eq!(
+        summary,
+        vec![
+            (1, 0, "В начале сотворил Бог небо и землю."),
+            (2, 0, "И сказал Бог: да будет свет."),
+            (2, 1, "И стал свет."),
+        ]
+    );
+    assert!(bible.get_chapter_sentences("Gen", 2).is_none());
+}

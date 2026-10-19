@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::domain::models::{Bible, Book, Chapter, RawVerse, Token, Verse};
+use crate::domain::models::{Bible, Book, Chapter, RawVerse, Sentence, Token, Verse};
 use crate::domain::TextTokenizer;
 
 impl Bible {
@@ -47,11 +47,34 @@ impl Bible {
         ))
     }
 
+    /// Every sentence of a chapter, in reading order.
+    pub fn get_chapter_sentences(&self, book_id: &str, chapter: u32) -> Option<Vec<Sentence>> {
+        let book = self.get_book(book_id)?;
+        let chapter_data = book.chapters.get(&chapter)?;
+        Some(
+            chapter_data
+                .verses
+                .iter()
+                .flat_map(|verse| {
+                    TextTokenizer::split_sentences(&verse.text)
+                        .into_iter()
+                        .enumerate()
+                        .map(move |(index, text)| Sentence {
+                            verse: verse.number,
+                            index: index as u32,
+                            text,
+                        })
+                })
+                .collect(),
+        )
+    }
+
     pub fn get_chapter_text(&self, book_id: &str, chapter: u32) -> Option<String> {
         let book = self.get_book(book_id)?;
         let chapter_data = book.chapters.get(&chapter)?;
         Some(join_verses(chapter_data))
     }
+
 }
 
 impl Book {

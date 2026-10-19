@@ -19,6 +19,14 @@ pub const WORD_GAP: f32 = 12.0;
 pub const WORD_PADDING: f32 = 3.0;
 /// Space kept below the last line so it never touches the translation drawer.
 pub const READER_BOTTOM_PADDING: f32 = 12.0;
+/// Font size of the English shown under each Russian sentence.
+pub const GLOSS_FONT_SIZE: f32 = 17.0;
+/// Line box height of the English, as a multiple of [`GLOSS_FONT_SIZE`].
+pub const GLOSS_LINE_HEIGHT_FACTOR: f32 = 1.35;
+/// Space between a Russian line and the English under it.
+pub const GLOSS_TOP_GAP: f32 = 3.0;
+/// Space between the English and the next Russian sentence.
+pub const GLOSS_GAP: f32 = 14.0;
 
 pub const CHAPTER_BUTTON_SIZE: f32 = 56.0;
 pub const CHAPTER_BUTTON_SPACING: f32 = 12.0;
@@ -32,6 +40,7 @@ pub const ZOOM_STEP: f32 = 0.25;
 
 pub const BIBLE_PATH: &str = "rst.json";
 pub const TRANSLATIONS_PATH: &str = "translations.json";
+pub const VERSE_TRANSLATIONS_PATH: &str = "verse_translations.json";
 
 /// Measures the advance width of `text` rendered at `font_size`.
 pub type Measure<'a> = &'a dyn Fn(&str, f32) -> f32;
@@ -113,14 +122,36 @@ impl LaidOutToken {
     }
 }
 
+/// A run of Russian text and, when there is one, the English translation
+/// shown underneath it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Passage {
+    pub tokens: Vec<Token>,
+    pub gloss: Option<String>,
+}
+
+/// One wrapped line of English. Glosses are only painted: they are never tap
+/// targets, so the English cannot end up in the word lists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlossLine {
+    pub text: String,
+    /// Text box, relative to the top-left of the reader content.
+    pub rect: Rect,
+}
+
 /// Word wrapped layout of a chapter, ready to be painted and hit tested.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TextLayout {
     pub items: Vec<LaidOutToken>,
+    /// The English under the Russian, in reading order.
+    pub glosses: Vec<GlossLine>,
     pub line_height: f32,
+    /// Number of lines of Russian text.
     pub line_count: usize,
     /// Width the text was laid out for.
     pub width: f32,
+    /// Height of the Russian lines and the English between them.
+    pub height: f32,
 }
 
 impl TextLayout {
@@ -137,66 +168,141 @@ impl TextLayout {
         max_width: f32,
         measure: Measure<'_>,
     ) -> Self {
+        let passage = Passage {
+            tokens: tokens.to_vec(),
+            gloss: None,
+        };
+        Self::build_passages(&[passage], font_size, line_height, max_width, measure)
+    }
+
+    /// Lay out several passages. The Russian of consecutive passages flows on
+    /// as one text, except that a passage's English gloss is put on its own
+    /// lines right under it and the next passage starts on a fresh line.
+    pub fn build_passages(
+        passages: &[Passage],
+        font_size: f32,
+        line_height: f32,
+        max_width: f32,
+        measure: Measure<'_>,
+    ) -> Self {
         // The highlight / tap target extends `WORD_PADDING` beyond the text, so
         // the text itself has to stay that much narrower than the panel.
         let wrap_width = (max_width - WORD_PADDING * 2.0).max(1.0);
+        let gloss_line_height = GLOSS_FONT_SIZE * GLOSS_LINE_HEIGHT_FACTOR;
         let mut layout = TextLayout {
             items: Vec::new(),
+            glosses: Vec::new(),
             line_height,
             line_count: 0,
             width: max_width,
+            height: 0.0,
         };
 
         let mut x = 0.0f32;
+        // Index and top of the line being filled; `line_open` is whether
+        // anything has been put on it yet.
         let mut line = 0usize;
+        let mut y = 0.0f32;
+        let mut line_open = false;
         let mut prev: Option<&Token> = None;
+        let mut index = 0usize;
 
-        for (index, token) in tokens.iter().enumerate() {
-            let full_text = token.to_string();
-            let is_word = token.is_word();
-            let parts = split_to_fit(&full_text, wrap_width, font_size, measure);
+        for passage in passages {
+            for token in &passage.tokens {
+                let full_text = token.to_string();
+                let is_word = token.is_word();
+                let parts = split_to_fit(&full_text, wrap_width, font_size, measure);
 
-            for (part_index, part) in parts.iter().enumerate() {
-                let width = measure(part, font_size);
-                let mut gap = if part_index == 0 {
-                    gap_before(prev, token)
-                } else {
-                    0.0
-                };
+                for (part_index, part) in parts.iter().enumerate() {
+                    let width = measure(part, font_size);
+                    let mut gap = if part_index == 0 {
+                        gap_before(prev, token)
+                    } else {
+                        0.0
+                    };
 
-                if x > 0.0 && x + gap + width > wrap_width {
-                    line += 1;
-                    x = 0.0;
-                    gap = 0.0;
+                    if x > 0.0 && x + gap + width > wrap_width {
+                        line += 1;
+                        y += line_height;
+                        x = 0.0;
+                        gap = 0.0;
+                    }
+
+                    x += gap;
+                    layout.items.push(LaidOutToken {
+                        token_index: index,
+                        text: part.clone(),
+                        full_text: full_text.clone(),
+                        is_word,
+                        line,
+                        starts_word: part_index == 0,
+                        ends_word: part_index + 1 == parts.len(),
+                        rect: Rect::from_min_size(pos2(x, y), vec2(width, line_height)),
+                    });
+                    line_open = true;
+                    x += width;
                 }
 
-                x += gap;
-                layout.items.push(LaidOutToken {
-                    token_index: index,
-                    text: part.clone(),
-                    full_text: full_text.clone(),
-                    is_word,
-                    line,
-                    starts_word: part_index == 0,
-                    ends_word: part_index + 1 == parts.len(),
-                    rect: Rect::from_min_size(
-                        pos2(x, line as f32 * line_height),
-                        vec2(width, line_height),
-                    ),
-                });
-                x += width;
+                prev = Some(token);
+                index += 1;
             }
 
-            prev = Some(token);
+            let Some(gloss) = passage.gloss.as_deref().filter(|g| !g.trim().is_empty()) else {
+                continue;
+            };
+            if line_open {
+                line += 1;
+                y += line_height;
+                line_open = false;
+            }
+            y += GLOSS_TOP_GAP;
+            for text in wrap_words(gloss, GLOSS_FONT_SIZE, wrap_width, measure) {
+                let width = measure(&text, GLOSS_FONT_SIZE).min(wrap_width);
+                layout.glosses.push(GlossLine {
+                    text,
+                    rect: Rect::from_min_size(pos2(0.0, y), vec2(width, gloss_line_height)),
+                });
+                y += gloss_line_height;
+            }
+            y += GLOSS_GAP;
+            x = 0.0;
+            prev = None;
         }
 
-        layout.line_count = if layout.items.is_empty() { 0 } else { line + 1 };
+        if line_open {
+            line += 1;
+            y += line_height;
+        }
+        layout.line_count = line;
+        layout.height = y;
         layout
     }
 
     /// Total height of the laid out text, in points.
     pub fn height(&self) -> f32 {
-        self.line_count as f32 * self.line_height
+        self.height
+    }
+
+    /// The slice of [`TextLayout::items`] that overlaps the band from `top`
+    /// to `bottom`. Items are pushed top to bottom, so this is two binary
+    /// searches.
+    pub fn item_range_for_y(&self, top: f32, bottom: f32) -> std::ops::Range<usize> {
+        let start = self.items.partition_point(|item| item.rect.bottom() < top);
+        let end = self
+            .items
+            .partition_point(|item| item.rect.top() <= bottom)
+            .max(start);
+        start..end
+    }
+
+    /// The glosses that overlap the band from `top` to `bottom`.
+    pub fn glosses_for_y(&self, top: f32, bottom: f32) -> &[GlossLine] {
+        let start = self.glosses.partition_point(|g| g.rect.bottom() < top);
+        let end = self
+            .glosses
+            .partition_point(|g| g.rect.top() <= bottom)
+            .max(start);
+        &self.glosses[start..end]
     }
 
     /// The highlight / tap target of an item.
@@ -337,25 +443,32 @@ pub fn grid_height(rows: usize, size: f32, spacing: f32) -> f32 {
 
 /// Number of text lines `text` needs in a box `width` wide.
 pub fn wrapped_line_count(text: &str, font_size: f32, width: f32, measure: Measure<'_>) -> usize {
-    if text.trim().is_empty() {
-        return 1;
-    }
+    wrap_words(text, font_size, width, measure).len().max(1)
+}
+
+/// Break `text` into lines at spaces so each fits in `width`. A single word
+/// wider than `width` gets a line of its own.
+pub fn wrap_words(text: &str, font_size: f32, width: f32, measure: Measure<'_>) -> Vec<String> {
     let space = measure(" ", font_size);
-    let mut lines = 1;
+    let mut lines = Vec::new();
+    let mut current = String::new();
     let mut current_width = 0.0;
     for word in text.split_whitespace() {
         let word_width = measure(word, font_size);
-        let needed = if current_width == 0.0 {
-            word_width
-        } else {
-            current_width + space + word_width
-        };
-        if needed > width && current_width > 0.0 {
-            lines += 1;
+        if current.is_empty() {
+            current.push_str(word);
+            current_width = word_width;
+        } else if current_width + space + word_width > width {
+            lines.push(std::mem::replace(&mut current, word.to_string()));
             current_width = word_width;
         } else {
-            current_width = needed;
+            current.push(' ');
+            current.push_str(word);
+            current_width += space + word_width;
         }
+    }
+    if !current.is_empty() {
+        lines.push(current);
     }
     lines
 }
@@ -381,8 +494,14 @@ pub fn drawer_height(translation_lines: usize, font_size: f32, available_height:
 
 /// Extra scroll room reserved below the last line so it can be scrolled clear
 /// of the translation drawer.
-pub fn reader_bottom_space(drawer_height: f32) -> f32 {
-    drawer_height + READER_BOTTOM_PADDING
+///
+/// The room is there whether or not the drawer is open, and is enough for the
+/// tallest drawer the reader panel (`panel_height` tall) can show: a word at
+/// the bottom of the chapter can then always be scrolled above the drawer it
+/// opens, and the end of the text does not jump as the drawer opens and closes.
+pub fn reader_bottom_space(drawer_height: f32, panel_height: f32) -> f32 {
+    let tallest_drawer = (panel_height * DRAWER_MAX_FRACTION).max(0.0);
+    drawer_height.max(tallest_drawer) + READER_BOTTOM_PADDING
 }
 
 /// A `height` tall box pinned to the bottom edge of `area`.
