@@ -530,3 +530,18 @@ fn the_visible_band_finds_items_and_glosses_by_height() {
     assert_eq!(layout.glosses_for_y(second.top(), second.bottom()).len(), 1);
     assert_eq!(layout.item_range_for_y(-100.0, -50.0), 0..0);
 }
+
+
+#[test]
+fn stats_axis_maximum_is_round_and_covers_the_data() {
+    use crate::ui::stats::nice_max;
+    assert_eq!(nice_max(0), 4);
+    assert_eq!(nice_max(3), 4);
+    assert_eq!(nice_max(7), 8);
+    assert_eq!(nice_max(37), 40);
+    assert_eq!(nice_max(123), 200);
+    for max in 0..2000 {
+        let nice = nice_max(max);
+        assert!(nice >= max && nice.is_multiple_of(4), "{} -> {}", max, nice);
+    }
+}

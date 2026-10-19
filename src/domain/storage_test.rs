@@ -58,3 +58,28 @@ fn test_save_then_load_roundtrip_persists_state() {
     assert_eq!(loaded, states);
     let _ = std::fs::remove_file(&path);
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn test_history_is_saved_next_to_the_state_file() {
+    use crate::domain::storage::{FileStore, StateStore};
+    use crate::domain::StatsHistory;
+
+    let dir = std::env::temp_dir().join("bible_reader_history_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = FileStore::new(dir.join("word_states.json").to_str().unwrap());
+
+    assert_eq!(store.load_history(), StatsHistory::default());
+
+    let mut history = StatsHistory::default();
+    history.known.record("2026-10-18", 2);
+    history.seen.record("2026-10-18", 7);
+    history.seen.record("2026-10-19", 6);
+    store.save_history(&history).unwrap();
+
+    assert!(dir.join("known_history.json").exists());
+    assert!(dir.join("seen_history.json").exists());
+    assert_eq!(store.load_history(), history);
+    let _ = std::fs::remove_dir_all(&dir);
+}

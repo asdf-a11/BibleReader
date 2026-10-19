@@ -843,3 +843,18 @@ fn a_chapter_without_translations_has_no_english() {
     assert!(app(&harness).reader_layout.glosses.is_empty());
     assert!(!app(&harness).reader_layout.items.is_empty());
 }
+
+
+#[test]
+fn the_stats_button_opens_the_stats_screen() {
+    let mut harness = reader();
+    harness.get_by_label("Stats").click();
+    harness.run();
+    assert!(matches!(state(&harness), AppState::Stats { .. }));
+    harness.get_by_label("Known words over time");
+    harness.get_by_label("Seen words over time");
+
+    harness.get_by_label("Back").click();
+    harness.run();
+    assert!(matches!(state(&harness), AppState::Reader { .. }));
+}

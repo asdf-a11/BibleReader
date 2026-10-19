@@ -61,6 +61,11 @@ impl WordStateStore {
         self.dirty = false;
     }
 
+    /// Number of words that currently have `status`.
+    pub fn count(&self, status: WordStatus) -> usize {
+        self.states.values().filter(|&&s| s == status).count()
+    }
+
     pub fn as_map(&self) -> HashMap<String, WordStatus> {
         self.states.clone()
     }

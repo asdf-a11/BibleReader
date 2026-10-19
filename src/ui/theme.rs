@@ -8,6 +8,9 @@ pub struct Theme {
     pub unseen: Color32,
     /// Words looked at at least once.
     pub seen: Color32,
+    /// Known words; only used by the stats chart, known words in the text are
+    /// drawn in the plain text colour.
+    pub known: Color32,
     pub background: Color32,
     /// Drawers, the toolbar and the translation window.
     pub panel: Color32,
@@ -44,6 +47,7 @@ impl Theme {
         Theme {
             unseen: Color32::from_rgb(0, 172, 200),
             seen: Color32::from_rgb(226, 176, 66),
+            known: Color32::from_rgb(110, 200, 120),
             background: Color32::from_rgb(16, 20, 24),
             panel: Color32::from_rgb(28, 34, 41),
             text: Color32::from_rgb(245, 247, 250),

@@ -1,5 +1,6 @@
 mod bible;
 mod models;
+mod stats;
 mod storage;
 mod tokenizer;
 mod translations;
@@ -7,6 +8,7 @@ mod verse_translations;
 mod word_state;
 
 pub use models::{Bible, RawVerse, Token, WordStatus};
+pub use stats::{days_from_date, today, CountHistory, StatsHistory};
 pub use storage::{default_store, StateStore};
 // Only the tests reach for the other two stores directly; keeping them out of
 // the non-test build keeps `cargo build` free of unused import warnings.
@@ -61,6 +63,8 @@ pub fn load_verse_translations(path: &str) -> Result<VerseTranslations, String> 
 mod bible_test;
 #[cfg(test)]
 mod models_test;
+#[cfg(test)]
+mod stats_test;
 #[cfg(test)]
 mod storage_test;
 #[cfg(test)]

@@ -12,11 +12,15 @@ use crate::domain::{
 use crate::ui::layout::{MAX_ZOOM, MIN_ZOOM};
 use crate::ui::state::AppState;
 
-/// A store in the temp directory, unique per test name and empty to start.
+/// A store in its own temp directory, unique per test name and empty to
+/// start. The directory keeps the history files written next to the state file
+/// apart from those of other tests running in parallel.
 fn temp_store(name: &str) -> FileStore {
     let mut path = std::env::temp_dir();
     path.push(name);
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&path);
+    std::fs::create_dir_all(&path).expect("temp dir can be created");
+    path.push("word_states.json");
     FileStore::new(path.to_str().expect("temp path is valid utf-8"))
 }
 
@@ -248,7 +252,7 @@ fn saved_progress_is_restored_on_startup() {
 
 #[test]
 fn progress_is_written_out_once_it_changes() {
-    let store = temp_store("bible_reader_persist_states.json");
+    let store = temp_store("bible_reader_persist_states");
     let path = store.path().to_string();
 
     let mut app = App::with_store(test_data(), Box::new(store));
@@ -268,7 +272,7 @@ fn progress_is_written_out_once_it_changes() {
 
 #[test]
 fn a_broken_state_file_does_not_stop_the_app_from_starting() {
-    let store = temp_store("bible_reader_broken_states.json");
+    let store = temp_store("bible_reader_broken_states");
     let path = store.path().to_string();
     std::fs::write(&path, "this is not json").unwrap();
 
@@ -302,4 +306,80 @@ fn a_missing_bible_file_is_reported_instead_of_panicking() {
     }
     app.open_book("gen");
     app.open_chapter(1);
+}
+
+#[test]
+fn stats_and_settings_share_the_return_screen() {
+    let mut app = test_app();
+    app.open_book("gen");
+    app.open_stats();
+    assert!(matches!(app.state, AppState::Stats { .. }));
+    assert_eq!(app.state.title(), "Stats");
+    app.open_settings();
+    app.open_stats();
+    app.go_back();
+    assert_eq!(
+        app.state,
+        AppState::ChapterSelection {
+            book_id: "gen".into()
+        }
+    );
+}
+
+#[test]
+fn stats_count_known_and_seen_words() {
+    let mut app = test_app();
+    app.toggle_word("бог");
+    app.toggle_word("небо");
+    app.set_selected_status(WordStatus::Known);
+    assert_eq!(app.known_count(), 1);
+    assert_eq!(app.seen_count(), 1);
+}
+
+#[test]
+fn stats_history_follows_words_moving_between_statuses() {
+    let mut app = test_app();
+    let last =
+        |h: &crate::domain::CountHistory| h.entries.last().map(|e| (e.date.clone(), e.count));
+
+    app.toggle_word("бог");
+    app.record_stats("2099-01-01");
+    assert_eq!(last(&app.history.seen), Some(("2099-01-01".into(), 1)));
+
+    // Seen -> known moves the word from one total to the other.
+    app.set_selected_status(WordStatus::Known);
+    app.record_stats("2099-01-02");
+    assert_eq!(last(&app.history.known), Some(("2099-01-02".into(), 1)));
+    assert_eq!(last(&app.history.seen), Some(("2099-01-02".into(), 0)));
+
+    // Known -> unseen later the same day overwrites that day's total.
+    app.set_selected_status(WordStatus::Unseen);
+    app.record_stats("2099-01-02");
+    assert_eq!(last(&app.history.known), Some(("2099-01-02".into(), 0)));
+    assert_eq!(last(&app.history.seen), Some(("2099-01-02".into(), 0)));
+}
+
+#[test]
+fn existing_progress_seeds_the_history_and_it_is_saved() {
+    let store = temp_store("bible_reader_history_states");
+    let path = store.path().to_string();
+    let mut states = HashMap::new();
+    states.insert("бог".to_string(), WordStatus::Known);
+    crate::domain::StateStore::save(&store, &states).unwrap();
+
+    let mut app = App::with_store(test_data(), Box::new(store));
+    assert_eq!(app.history.known.entries.last().map(|e| e.count), Some(1));
+    app.persist();
+    assert!(app.save_error.is_none());
+
+    let reloaded = App::with_store(test_data(), Box::new(FileStore::new(&path)));
+    assert_eq!(reloaded.history, app.history);
+
+    app.toggle_word("небо");
+    app.persist();
+    let reloaded = App::with_store(test_data(), Box::new(FileStore::new(&path)));
+    assert_eq!(
+        reloaded.history.seen.entries.last().map(|e| e.count),
+        Some(1)
+    );
 }

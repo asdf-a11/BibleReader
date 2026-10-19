@@ -8,6 +8,7 @@ pub mod layout;
 pub mod lists;
 pub mod reader;
 pub mod state;
+pub mod stats;
 pub mod theme;
 
 use egui::{CentralPanel, Panel, RichText, Ui};
@@ -46,11 +47,12 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             chapter,
         } => reader::show(ui, app, book_id, chapter),
         AppState::Settings { .. } => lists::show_settings(ui, app),
+        AppState::Stats { .. } => stats::show(ui, app),
     });
 }
 
 /// Toolbar with the back button, the current screen's title and the settings
-/// button. It is shown on every screen, so it lives outside the central panel.
+/// and stats buttons. It is shown on every screen, so it lives outside the central panel.
 fn show_toolbar(ui: &mut Ui, app: &mut App) {
     Panel::top("toolbar").show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -73,6 +75,13 @@ fn show_toolbar(ui: &mut Ui, app: &mut App) {
                     .on_hover_text("Settings");
                 if settings.clicked() {
                     app.open_settings();
+                }
+                // Right to left: this lands just left of Settings.
+                let stats = ui
+                    .add_sized([96.0, 30.0], egui::Button::new("Stats"))
+                    .on_hover_text("Known and seen words over time");
+                if stats.clicked() {
+                    app.open_stats();
                 }
             });
         });

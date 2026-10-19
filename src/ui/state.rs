@@ -14,6 +14,10 @@ pub enum AppState {
     Settings {
         return_to: Box<AppState>,
     },
+    /// Known/seen totals and their history; `return_to` as for `Settings`.
+    Stats {
+        return_to: Box<AppState>,
+    },
 }
 
 impl AppState {
@@ -24,6 +28,7 @@ impl AppState {
             AppState::ChapterSelection { .. } => "Chapters".to_string(),
             AppState::Reader { chapter, .. } => format!("Chapter {}", chapter),
             AppState::Settings { .. } => "Settings".to_string(),
+            AppState::Stats { .. } => "Stats".to_string(),
         }
     }
 }

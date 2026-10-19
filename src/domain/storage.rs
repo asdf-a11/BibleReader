@@ -2,9 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::domain::models::WordStatus;
+use crate::domain::stats::{CountHistory, StatsHistory};
 
 /// Where the word states live on disk.
 pub const STATE_FILENAME: &str = "word_states.json";
+/// Day by day number of known words, next to [`STATE_FILENAME`].
+pub const KNOWN_HISTORY_FILENAME: &str = "known_history.json";
+/// Day by day number of seen words, next to [`STATE_FILENAME`].
+pub const SEEN_HISTORY_FILENAME: &str = "seen_history.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateFile {
@@ -49,16 +54,36 @@ pub trait StateStore: Send + Sync {
     fn load(&self) -> HashMap<String, WordStatus>;
 
     fn save(&self, states: &HashMap<String, WordStatus>) -> Result<(), String>;
+
+    /// Load the known/seen history. Like [`StateStore::load`], a missing or
+    /// corrupt history is simply empty.
+    fn load_history(&self) -> StatsHistory;
+
+    fn save_history(&self, history: &StatsHistory) -> Result<(), String>;
 }
 
-/// Reads and writes `word_states.json`.
+/// Reads and writes `word_states.json` and, in the same directory,
+/// `known_history.json` and `seen_history.json`.
 pub struct FileStore {
     path: String,
+    known_history_path: String,
+    seen_history_path: String,
 }
 
 impl FileStore {
     pub fn new(path: impl Into<String>) -> Self {
-        FileStore { path: path.into() }
+        let path = path.into();
+        let sibling = |name: &str| {
+            std::path::Path::new(&path)
+                .with_file_name(name)
+                .to_string_lossy()
+                .into_owned()
+        };
+        FileStore {
+            known_history_path: sibling(KNOWN_HISTORY_FILENAME),
+            seen_history_path: sibling(SEEN_HISTORY_FILENAME),
+            path,
+        }
     }
 
     pub fn path(&self) -> &str {
@@ -87,6 +112,30 @@ impl StateStore for FileStore {
         std::fs::write(&self.path, content)
             .map_err(|e| format!("Failed to write '{}': {}", self.path, e))
     }
+
+    fn load_history(&self) -> StatsHistory {
+        let load = |path: &str| {
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|content| CountHistory::decode(&content).ok())
+                .unwrap_or_default()
+        };
+        StatsHistory {
+            known: load(&self.known_history_path),
+            seen: load(&self.seen_history_path),
+        }
+    }
+
+    fn save_history(&self, history: &StatsHistory) -> Result<(), String> {
+        for (path, counts) in [
+            (&self.known_history_path, &history.known),
+            (&self.seen_history_path, &history.seen),
+        ] {
+            std::fs::write(path, counts.encode()?)
+                .map_err(|e| format!("Failed to write '{}': {}", path, e))?;
+        }
+        Ok(())
+    }
 }
 
 /// Keeps states in RAM only. Used by tests and as the fallback on platforms
@@ -94,6 +143,7 @@ impl StateStore for FileStore {
 #[derive(Debug, Default)]
 pub struct MemoryStore {
     states: std::sync::Mutex<HashMap<String, WordStatus>>,
+    history: std::sync::Mutex<StatsHistory>,
 }
 
 impl MemoryStore {
@@ -104,6 +154,7 @@ impl MemoryStore {
     pub fn with_states(states: HashMap<String, WordStatus>) -> Self {
         MemoryStore {
             states: std::sync::Mutex::new(states),
+            history: Default::default(),
         }
     }
 }
@@ -122,6 +173,22 @@ impl StateStore for MemoryStore {
             .lock()
             .map_err(|_| "Failed to lock the in-memory state store".to_string())?;
         *guard = states.clone();
+        Ok(())
+    }
+
+    fn load_history(&self) -> StatsHistory {
+        self.history
+            .lock()
+            .map(|history| history.clone())
+            .unwrap_or_default()
+    }
+
+    fn save_history(&self, history: &StatsHistory) -> Result<(), String> {
+        let mut guard = self
+            .history
+            .lock()
+            .map_err(|_| "Failed to lock the in-memory history store".to_string())?;
+        *guard = history.clone();
         Ok(())
     }
 }

@@ -6,8 +6,8 @@
 use egui::{Pos2, Rect};
 
 use crate::domain::{
-    default_store, load_bible_from_rst, load_translations, load_verse_translations, Bible,
-    StateStore, Translations, VerseTranslations, WordStateStore, WordStatus,
+    default_store, load_bible_from_rst, load_translations, load_verse_translations, today, Bible,
+    StateStore, StatsHistory, Translations, VerseTranslations, WordStateStore, WordStatus,
 };
 use crate::ui::layout::{
     TextLayout, BIBLE_PATH, MAX_ZOOM, MIN_ZOOM, TRANSLATIONS_PATH, VERSE_TRANSLATIONS_PATH,
@@ -69,6 +69,10 @@ pub struct App {
     /// User zoom, applied with `egui::Context::set_zoom_factor`.
     pub zoom: f32,
     pub word_store: WordStateStore,
+    /// Day by day number of known and seen words, shown on the Stats screen.
+    pub history: StatsHistory,
+    /// Whether [`App::history`] changed since it was last saved.
+    history_dirty: bool,
     /// Last persistence error, surfaced in the toolbar.
     pub save_error: Option<String>,
     /// Layout of the chapter currently on screen. The reader keeps it between
@@ -99,12 +103,15 @@ impl App {
     /// [`crate::run`], which loads from disk).
     pub fn with_store(data: AppData, store: Box<dyn StateStore>) -> Self {
         let word_store = WordStateStore::from_states(store.load());
-        App {
+        let history = store.load_history();
+        let mut app = App {
             data,
             state: AppState::BookSelection,
             selected_word: None,
             zoom: 1.0,
             word_store,
+            history,
+            history_dirty: false,
             save_error: None,
             reader_layout: TextLayout::default(),
             reader_layout_key: None,
@@ -114,7 +121,11 @@ impl App {
             reader_viewport: Rect::ZERO,
             reader_drawer: None,
             store,
-        }
+        };
+        // Progress saved before the history existed (or edited by hand) starts
+        // the history off with today's totals.
+        app.record_stats(&today());
+        app
     }
 
     // ----------------------------------------------------------------- screens
@@ -139,16 +150,32 @@ impl App {
         if matches!(self.state, AppState::Settings { .. }) {
             return;
         }
-        let return_to = std::mem::replace(&mut self.state, AppState::BookSelection);
-        self.state = AppState::Settings {
-            return_to: Box::new(return_to),
-        };
+        let return_to = self.take_return_to();
+        self.state = AppState::Settings { return_to };
     }
 
-    /// Back button: reader -> chapters -> books, settings -> previous screen.
+    pub fn open_stats(&mut self) {
+        if matches!(self.state, AppState::Stats { .. }) {
+            return;
+        }
+        let return_to = self.take_return_to();
+        self.state = AppState::Stats { return_to };
+    }
+
+    /// The screen Settings/Stats should go back to. Switching between the two
+    /// keeps the original screen, so Back never bounces between them.
+    fn take_return_to(&mut self) -> Box<AppState> {
+        match std::mem::replace(&mut self.state, AppState::BookSelection) {
+            AppState::Settings { return_to } | AppState::Stats { return_to } => return_to,
+            other => Box::new(other),
+        }
+    }
+
+    /// Back button: reader -> chapters -> books, settings/stats -> previous
+    /// screen.
     pub fn go_back(&mut self) {
         self.state = match std::mem::replace(&mut self.state, AppState::BookSelection) {
-            AppState::Settings { return_to } => *return_to,
+            AppState::Settings { return_to } | AppState::Stats { return_to } => *return_to,
             AppState::Reader { book_id, .. } => AppState::ChapterSelection { book_id },
             // Already at the top of the list; there is nowhere further to go.
             AppState::ChapterSelection { .. } => AppState::BookSelection,
@@ -187,6 +214,29 @@ impl App {
         self.word_store.get_status(word)
     }
 
+    // ------------------------------------------------------------------- stats
+
+    pub fn known_count(&self) -> usize {
+        self.word_store.count(WordStatus::Known)
+    }
+
+    pub fn seen_count(&self) -> usize {
+        self.word_store.count(WordStatus::Seen)
+    }
+
+    /// Record the current known and seen totals as those of `date`
+    /// (`YYYY-MM-DD`). Totals are recorded rather than increments, so a word
+    /// moving between known, seen and unseen in any direction is counted right.
+    pub fn record_stats(&mut self, date: &str) {
+        let known = self.known_count();
+        let seen = self.seen_count();
+        let changed_known = self.history.known.record(date, known);
+        let changed_seen = self.history.seen.record(date, seen);
+        if changed_known || changed_seen {
+            self.history_dirty = true;
+        }
+    }
+
     // -------------------------------------------------------------------- zoom
 
     pub fn zoom_in(&mut self) {
@@ -199,17 +249,31 @@ impl App {
 
     // -------------------------------------------------------------- persistence
 
-    /// Write the word states back to the store if they changed.
+    /// Write the word states and the stats history back to the store if they
+    /// changed.
     pub fn persist(&mut self) {
-        if !self.word_store.is_dirty() {
+        if self.word_store.is_dirty() {
+            self.record_stats(&today());
+        }
+        if !self.word_store.is_dirty() && !self.history_dirty {
             return;
         }
-        let result = self.store.save(&self.word_store.as_map());
-        match result {
-            Ok(()) => {
+
+        let mut result = Ok(());
+        if self.word_store.is_dirty() {
+            result = self.store.save(&self.word_store.as_map());
+            if result.is_ok() {
                 self.word_store.clear_dirty();
-                self.save_error = None;
             }
+        }
+        if self.history_dirty && result.is_ok() {
+            result = self.store.save_history(&self.history);
+            if result.is_ok() {
+                self.history_dirty = false;
+            }
+        }
+        match result {
+            Ok(()) => self.save_error = None,
             Err(e) => self.save_error = Some(e),
         }
     }
